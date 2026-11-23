@@ -402,10 +402,10 @@
     else if (!S.data) {
       html += `<div class="card loading">${S.err ? `<div class="warnbox" style="text-align:left">${esc(S.err)}</div><p><button class="btn" data-act="reload">Reintentar</button></p>` : 'Cargando información…'}</div>`;
     } else {
-      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['periodos', 'Vacaciones y permisos'], ['config', 'Código QR y patrones'], ['cuenta', esAdmin() ? 'Administración' : 'Mi contraseña']];
+      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['periodos', 'Vacaciones y permisos'], ['config', 'Código QR y patrones'], ['historial', 'Historial'], ['cuenta', esAdmin() ? 'Administración' : 'Mi contraseña']];
       html += `<div class="tabs">${tabs.map(([id, l]) => `<button class="tab ${S.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${l}</button>`).join('')}</div>`;
       if (S.err) html += `<div class="warnbox" style="margin-bottom:12px">${esc(S.err)} <button class="btn sm" data-act="reload">Reintentar</button></div>`;
-      html += S.tab === 'periodos' ? viewPeriodos() : S.tab === 'maestros' ? viewMaestros() : S.tab === 'config' ? viewConfig() : S.tab === 'cuenta' ? viewCuenta() : viewReporte();
+      html += S.tab === 'historial' ? viewHistorial() : S.tab === 'periodos' ? viewPeriodos() : S.tab === 'maestros' ? viewMaestros() : S.tab === 'config' ? viewConfig() : S.tab === 'cuenta' ? viewCuenta() : viewReporte();
     }
     if (S.toast) html += `<div class="toast">${esc(S.toast)}</div>`;
     app.innerHTML = html;
@@ -531,13 +531,39 @@
     const proximos = lista.filter(p => p.hasta >= hoy), pasados = lista.filter(p => p.hasta < hoy);
     const tabla = (arr) => `<div class="tw"><table><thead><tr><th>Fechas</th><th>Motivo</th><th>Aplica a</th><th>Registró</th><th></th></tr></thead><tbody>${arr.map(fila).join('')}</tbody></table></div>`;
     return `<div class="card"><h2>Escribe la indicación</h2>
-        <p class="muted small" style="margin-top:-6px">Escribe como lo dirías normalmente. El sistema entiende fechas sueltas, rangos y nombres de maestros, y te muestra lo que entendió antes de guardar. Las faltas de esos días se justifican solas, también las de quincenas pasadas.</p>
+        <p class="muted small" style="margin-top:-6px">Escribe como lo dirías normalmente. El sistema entiende fechas sueltas, rangos y nombres de maestros, y te muestra lo que entendió antes de guardar. Las faltas de esos días se justifican solas, también las de quincenas pasadas. Cada registro guarda quién lo hizo; consulta todo en <b>Historial</b>.</p>
         <form id="fIndicacion" class="row" style="align-items:stretch"><textarea name="texto" rows="2" class="grow" style="min-width:260px;resize:vertical" placeholder="Ej. Del 20 de diciembre 2026 al 7 de enero 2027 son vacaciones">${esc(S.indicacion || '')}</textarea>
           <button class="btn primary" type="submit">Interpretar</button></form>
         <div class="chips" style="margin-top:8px">${ejemplos.map(e => `<button class="chip" style="border:none;cursor:pointer;padding-right:11px" data-act="ejemplo" data-k="${esc(e)}">${esc(e)}</button>`).join('')}</div>
         ${prevHtml}</div>
       <div class="card"><h2>Próximos y vigentes</h2>${proximos.length ? tabla(proximos) : '<p class="muted">No hay periodos próximos.</p>'}</div>
-      ${pasados.length ? `<div class="card"><h2>Anteriores</h2>${tabla(pasados)}</div>` : ''}`;
+      ${pasados.length ? `<div class="card"><h2>Anteriores</h2>${tabla(pasados)}</div>` : ''}
+      ${(D().periodos_anulados || []).length ? `<div class="card"><h2>Anulados</h2><p class="muted small" style="margin-top:-6px">Periodos que se quitaron. Se conservan como constancia.</p><div class="tw"><table><thead><tr><th>Fechas</th><th>Motivo</th><th>Aplicaba a</th><th>Registró</th><th>Anuló</th></tr></thead><tbody>
+        ${D().periodos_anulados.map(p => `<tr class="baja"><td style="white-space:nowrap">${esc(fmtRango(p.desde, p.hasta))}</td><td>${esc(p.motivo)}</td><td class="small">${p.maestros ? esc(p.maestros.map(id => (maestroById(id) || {}).nombre || '—').join(', ')) : 'Todos'}</td>
+          <td class="small">${esc(p.creado_por || '—')}<br>${esc(fmtTs(p.creado))}</td><td class="small"><b>${esc(p.anulado_por || '—')}</b><br>${esc(fmtTs(p.anulado))}</td></tr>`).join('')}</tbody></table></div></div>` : ''}`;
+  }
+
+  const CATS = [['', 'Todo'], ['periodo', 'Vacaciones y permisos'], ['ajuste', 'Correcciones de días'], ['maestro', 'Maestros'], ['dispositivo', 'Celulares'], ['patron', 'Patrones'], ['config', 'Ajustes'], ['ips', 'Redes permitidas'], ['cuenta', 'Cuentas y contraseñas']];
+  async function cargarHist(mas) {
+    const f = S.histF || { categoria: '', usuario: '' };
+    const lista = mas && S.hist ? S.hist : [];
+    const datos = { categoria: f.categoria, usuario: f.usuario, limite: 200, antes_de: mas && lista.length ? lista[lista.length - 1].id : '' };
+    try { const j = await api('bitacora', { datos }); S.hist = lista.concat(j.r); S.histFin = j.r.length < 200; render(); }
+    catch (e) { if (!e.silent) toast(e.message); }
+  }
+  function viewHistorial() {
+    if (S.hist == null) { S.hist = []; cargarHist(false); }
+    const f = S.histF || { categoria: '', usuario: '' };
+    const usuarios = [...new Set((S.hist || []).map(x => x.usuario).concat(f.usuario ? [f.usuario] : []))].filter(Boolean).sort();
+    const rows = S.hist || [];
+    return `<div class="card"><h2>Historial de cambios</h2>
+      <p class="muted small" style="margin-top:-6px">Cada cambio en el panel queda registrado con el usuario, la fecha y la hora. Este historial no se puede borrar ni modificar, ni siquiera el administrador.</p>
+      <div class="row"><select id="histCat">${CATS.map(([v, l]) => `<option value="${v}" ${f.categoria === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select id="histUsr"><option value="">Todos los usuarios</option>${usuarios.map(u => `<option ${f.usuario === u ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></div>
+      <div class="tw" style="margin-top:12px"><table><thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Cambio</th></tr></thead><tbody>
+      ${rows.map(x => `<tr><td class="small" style="white-space:nowrap">${esc(fmtTs(x.ts.slice(0, 16)))}</td><td class="small"><b>${esc(x.usuario || '—')}</b></td><td class="small">${esc(x.descripcion)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">Sin cambios registrados.</td></tr>'}
+      </tbody></table></div>
+      ${rows.length && !S.histFin ? '<p><button class="btn" data-act="histMas">Ver más</button></p>' : ''}</div>`;
   }
 
   function viewReporte() {
@@ -592,7 +618,7 @@
     const rowsHtml = dias.map(d => {
       const corr = d.ajustado && (d.e !== d.eOrig || d.s !== d.sOrig) ? `<div class="muted small">Registrado: ${esc(d.eOrig || '—')}–${esc(d.sOrig || '—')}</div>` : '';
       const main = `<tr><td>${fmtDay(d.k)}</td><td>${esc(d.prog || '—')}–${esc(d.progS || '—')}</td><td><b>${esc(d.e || '—')}</b></td><td><b>${esc(d.s || '—')}</b>${corr}</td>
-        <td><span class="pill ${d.cls}">${esc(d.estado)}</span>${d.sinSalida ? ' <span class="pill p-warn">Sin salida</span>' : ''}${d.anticipada ? ' <span class="pill p-warn">Salida anticipada</span>' : ''}${d.ajustado ? ` <span class="pill p-mute" title="${esc(d.nota)}">Corregido</span>` : ''}</td>
+        <td><span class="pill ${d.cls}">${esc(d.estado)}</span>${d.sinSalida ? ' <span class="pill p-warn">Sin salida</span>' : ''}${d.anticipada ? ' <span class="pill p-warn">Salida anticipada</span>' : ''}${d.ajustado ? ` <span class="pill p-mute" title="${esc(d.nota)}">Corregido${d.ajPor ? ' por ' + esc(d.ajPor) : ''}</span>` : ''}</td>
         <td class="num">${d.trabajado != null ? hm(d.trabajado) : ''}</td><td class="num">${d.extra ? hm(d.extra) : ''}</td>
         <td><button class="btn sm" data-act="edit" data-k="${d.k}">${ed === d.k ? 'Editando' : 'Corregir'}</button></td></tr>`;
       if (ed !== d.k) return main;
@@ -777,6 +803,11 @@
       XLSX.utils.book_append_sheet(wb, s1, hoja('Resumen' + tag));
       XLSX.utils.book_append_sheet(wb, s2, hoja('Entradas' + tag));
     }
+    const bit = [[cfg().escuela.toUpperCase()], [`Bitácora de cambios que afectan la quincena del ${periodLabel(p)}`], [], ['Fecha y hora', 'Usuario', 'Cambio']];
+    for (const x of (D().bitacora_periodo || []).slice().reverse()) bit.push([x.ts, x.usuario, x.descripcion]);
+    if (bit.length === 4) bit.push(['', '', 'Sin cambios registrados para esta quincena.']);
+    const s3 = XLSX.utils.aoa_to_sheet(bit); s3['!cols'] = [{ wch: 20 }, { wch: 30 }, { wch: 110 }];
+    XLSX.utils.book_append_sheet(wb, s3, hoja('Bitácora'));
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     try { await saveFile(new Blob([buf]), name); S.csvText = null; render(); }
     catch (e) { S.csvText = tsv(); render(); }
@@ -788,6 +819,7 @@
     const { act, id, k } = b.dataset;
     switch (act) {
       case 'reload': await cargar(); break;
+      case 'histMas': await cargarHist(true); break;
       case 'ejemplo': S.indicacion = k; S.prev = null; render(); break;
       case 'cancelPrev': S.prev = null; render(); break;
       case 'aplica': { const lm = document.getElementById('listaM'); if (lm) lm.style.display = b.value === 'algunos' ? '' : 'none'; return; }
@@ -802,7 +834,7 @@
       case 'resetPass': S.resetFor = id; render(); break;
       case 'resetNo': S.resetFor = null; render(); break;
       case 'refSistema': S.sistema = {}; render(); cargarSistema(); break;
-      case 'tab': S.tab = id; S.sel = null; S.editDay = null; if (id === 'cuenta') { S.usuarios = null; S.sistema = null; } render(); break;
+      case 'tab': S.tab = id; S.sel = null; S.editDay = null; if (id === 'cuenta') { S.usuarios = null; S.sistema = null; } if (id === 'historial') { S.hist = null; } render(); break;
       case 'prev': case 'next': case 'hoy':
         S.periodo = act === 'hoy' ? periodOf(new Date()) : periodShift(S.periodo, act === 'prev' ? -1 : 1);
         S.editDay = null; S.csvText = null; render(); await cargar(true); break;
@@ -836,6 +868,7 @@
   app.addEventListener('change', async e => {
     const el = e.target;
     if (el.dataset && el.dataset.asig) { S.asignar[el.dataset.asig] = el.value; return; }
+    if (el.id === 'histCat' || el.id === 'histUsr') { S.histF = { categoria: document.getElementById('histCat').value, usuario: document.getElementById('histUsr').value }; S.hist = null; render(); return; }
     if (el.id === 'selPatron') { S.patronFiltro = +el.value; S.csvText = null; render(); return; }
     const mid = el.dataset && el.dataset.mid; const field = el.dataset && el.dataset.field;
     if (!mid || !field) return;
