@@ -155,7 +155,7 @@
 
   // ---------- estado ----------
   const S = {
-    token: null, yo: null, fatal: null, err: null, loginErr: null, primera: false, usuarios: null,
+    token: null, yo: null, patronFiltro: 0, sistema: null, fatal: null, err: null, loginErr: null, primera: false, usuarios: null,
     data: null, loading: false, loadedFor: null,
     tab: 'reporte', periodo: periodOf(new Date()), sel: null, editDay: null, confirmBaja: null,
     verBajas: false, csvText: null, toast: null, pendingRender: false, busy: false, asignar: {}
@@ -165,6 +165,12 @@
     razonSocial: c.razon_social || '', rfc: c.rfc || '', registroPatronal: c.registro_patronal || '', domicilio: c.domicilio || '', ips: c.ips_permitidas || [] }; };
   const maestrosList = (incluirBajas = true) => D().maestros.filter(m => incluirBajas || !m.baja).slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
   const maestroById = id => D().maestros.find(m => m.id === id);
+  const esAdmin = () => !!(S.yo && S.yo.rol === 'admin');
+  const patrones = () => (D().patrones || [{ id: 1, nombre: 'Patrón 1', activo: true }]);
+  const patronesActivos = () => patrones().filter(p => p.activo);
+  const patronById = id => patrones().find(p => p.id === id) || patrones()[0];
+  const nombrePatron = p => (p && (p.nombre || p.razon_social)) || ('Patrón ' + (p ? p.id : ''));
+  const variosPatrones = () => patronesActivos().length > 1;
 
   let toastTimer;
   function toast(msg) { S.toast = msg; clearTimeout(toastTimer); toastTimer = setTimeout(() => { S.toast = null; render(); }, 3600); render(); }
@@ -214,7 +220,7 @@
     try { const j = await api('cuenta', { op: accion, datos }); S.busy = false; if (okMsg) toast(okMsg); else render(); return j.r; }
     catch (e) { S.busy = false; if (!e.silent) toast(e.message); return null; }
   }
-  async function cargarUsuarios() { const r = await cuenta('listar', {}); if (r) { S.usuarios = r; render(); } }
+  async function cargarUsuarios() { try { const j = await api('cuenta', { op: 'listar', datos: {} }); S.usuarios = j.r; render(); } catch (e) { if (!e.silent) toast(e.message); } }
 
   // ---------- cálculo de asistencia ----------
   function dayInfo(m, k, rec, aj, today) {
@@ -288,7 +294,7 @@
     }
     return { dias, t };
   }
-  const maestrosDePeriodo = p => { const r = periodRange(p); return maestrosList().filter(m => (!m.baja || m.baja >= r.ini) && m.alta <= r.fin); };
+  const maestrosDePeriodo = (p, pid) => { const r = periodRange(p); const f = pid === undefined ? S.patronFiltro : pid; return maestrosList().filter(m => (!m.baja || m.baja >= r.ini) && m.alta <= r.fin && (!f || m.patron_id === f)); };
   const pendientes = () => D().dispositivos.filter(d => !d.maestro_id);
 
   // ---------- render ----------
@@ -299,7 +305,7 @@
     else if (!S.data) {
       html += `<div class="card loading">${S.err ? `<div class="warnbox" style="text-align:left">${esc(S.err)}</div><p><button class="btn" data-act="reload">Reintentar</button></p>` : 'Cargando información…'}</div>`;
     } else {
-      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['config', 'Código QR y datos del patrón'], ['cuenta', 'Usuarios y contraseña']];
+      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['config', 'Código QR y patrones'], ['cuenta', esAdmin() ? 'Administración' : 'Mi contraseña']];
       html += `<div class="tabs">${tabs.map(([id, l]) => `<button class="tab ${S.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${l}</button>`).join('')}</div>`;
       if (S.err) html += `<div class="warnbox" style="margin-bottom:12px">${esc(S.err)} <button class="btn sm" data-act="reload">Reintentar</button></div>`;
       html += S.tab === 'maestros' ? viewMaestros() : S.tab === 'config' ? viewConfig() : S.tab === 'cuenta' ? viewCuenta() : viewReporte();
@@ -310,7 +316,7 @@
   }
   function hero() {
     return `<div class="hero"><div class="brandmark"><div class="logoimg" role="img" aria-label="Logo Colegio Hispanoamericano"></div><div><span class="kicker">SECUNDARIA</span><h1>Colegio Hispanoamericano</h1><div class="sub">Panel del contador · Registro electrónico de jornada</div></div></div>
-      ${S.token ? `<div class="row" style="position:relative;z-index:1"><span class="small" style="opacity:.85">${esc((S.yo && (S.yo.nombre || S.yo.email)) || '')}</span>${S.data ? `<button class="btn sm" data-act="reload" ${S.loading ? 'disabled' : ''}>${S.loading ? 'Actualizando…' : 'Actualizar'}</button>` : ''}<button class="btn sm" data-act="logout">Salir</button></div>` : ''}</div>`;
+      ${S.token ? `<div class="row" style="position:relative;z-index:1"><span class="small" style="opacity:.85">${esc((S.yo && (S.yo.nombre || S.yo.email)) || '')}${esAdmin() ? ' · Administrador' : ''}</span>${S.data ? `<button class="btn sm" data-act="reload" ${S.loading ? 'disabled' : ''}>${S.loading ? 'Actualizando…' : 'Actualizar'}</button>` : ''}<button class="btn sm" data-act="logout">Salir</button></div>` : ''}</div>`;
   }
 
   function cardPendientes() {
@@ -337,7 +343,7 @@
         <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Crear cuenta y entrar</button>
         <button class="btn link" type="button" data-act="verLogin">Ya tengo cuenta</button></form></div>`;
     return `<div class="card" style="max-width:420px;margin:30px auto"><h2>Iniciar sesión</h2>
-      <p class="muted small" style="margin-top:-6px">Panel del contador · Checador de asistencia</p>
+      <p class="muted small" style="margin-top:-6px">Contador o administrador · Checador de asistencia</p>
       <form id="fLogin" class="editgrid" style="flex-direction:column;align-items:stretch">
         <label class="f">Correo electrónico<input type="email" name="email" required autocomplete="username"></label>
         <label class="f">Contraseña<input type="password" name="password" required autocomplete="current-password"></label>
@@ -346,30 +352,51 @@
         <button class="btn link" type="button" data-act="verPrimera">Primera vez: crear cuenta con código de configuración</button></form></div>`;
   }
   function viewCuenta() {
-    if (S.usuarios == null) { S.usuarios = []; cargarUsuarios(); }
-    const us = S.usuarios || [];
-    return `<div class="card"><h2>Cambiar mi contraseña</h2><form id="fPass" class="editgrid">
+    const pass = `<div class="card"><h2>Cambiar mi contraseña</h2><form id="fPass" class="editgrid">
         <label class="f">Contraseña actual<input type="password" name="actual" required autocomplete="current-password"></label>
         <label class="f">Nueva contraseña<input type="password" name="nueva" required minlength="8" autocomplete="new-password"></label>
-        <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Cambiar</button></form></div>
-      <div class="card"><h2>Usuarios con acceso al panel</h2>
-        <div class="tw"><table><thead><tr><th>Correo</th><th>Nombre</th><th>Último acceso</th><th></th></tr></thead><tbody>
-        ${us.map(u => `<tr class="${u.activo ? '' : 'baja'}"><td>${esc(u.email)}</td><td>${esc(u.nombre)}</td><td class="small">${esc(u.ultimo_acceso ? fmtTs(u.ultimo_acceso) : '—')}</td>
-          <td>${u.activo ? (S.yo && S.yo.email === u.email ? '<span class="muted small">Tú</span>' : `<button class="btn sm danger" data-act="desactivarUsuario" data-id="${esc(u.id)}">Quitar acceso</button>`) : '<span class="pill p-mute">Sin acceso</span>'}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">Cargando…</td></tr>'}
+        <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Cambiar</button></form>
+        ${esAdmin() ? '' : '<p class="muted small" style="margin-bottom:0">Si olvidas tu contraseña, pide al administrador que te asigne una nueva.</p>'}</div>`;
+    if (!esAdmin()) return pass;
+    if (S.usuarios == null) { S.usuarios = []; cargarUsuarios(); }
+    if (S.sistema == null) { S.sistema = {}; cargarSistema(); }
+    const us = S.usuarios || []; const st = S.sistema || {};
+    const ok = (cond, txt) => `<span class="pill ${cond ? 'p-ok' : 'p-warn'}">${txt}</span>`;
+    const sistema = `<div class="card"><div class="row between"><h2 style="margin:0">Estado de la plataforma</h2><button class="btn sm" data-act="refSistema">Actualizar</button></div>
+      ${st.ahora ? `<div class="stats" style="margin-top:12px">
+        <div class="stat"><span>Último escaneo</span><b style="font-size:16px">${esc(st.ultimo_escaneo ? fmtTs(st.ultimo_escaneo) : 'Ninguno')}</b></div>
+        <div class="stat"><span>Escaneos hoy (válidos)</span><b>${st.validos_hoy}</b></div>
+        <div class="stat"><span>Rechazados hoy</span><b style="color:${st.rechazados_hoy ? 'var(--warn)' : 'inherit'}">${st.rechazados_hoy}</b></div>
+        <div class="stat"><span>Maestros activos</span><b>${st.maestros_activos}</b></div>
+        <div class="stat"><span>Celulares registrados</span><b>${st.celulares}</b></div>
+        <div class="stat"><span>Fallas de acceso 24 h</span><b style="color:${st.fallas_login_24h ? 'var(--warn)' : 'inherit'}">${st.fallas_login_24h}</b></div></div>
+        <div class="chips">${ok(st.escaneos_7d > 0, st.escaneos_7d > 0 ? 'El QR está recibiendo escaneos' : 'Sin escaneos en 7 días')} ${ok(!st.maestros_sin_celular, st.maestros_sin_celular ? `${st.maestros_sin_celular} maestro(s) sin celular` : 'Todos los maestros tienen celular')} ${ok(!st.pendientes, st.pendientes ? `${st.pendientes} celular(es) por asignar` : 'Sin celulares pendientes')}</div>
+        <div class="row" style="align-items:flex-start;margin-top:14px;gap:16px">
+          <div class="grow" style="min-width:280px"><h3>Últimos escaneos</h3><div class="tw"><table><tbody>${(st.ultimos_escaneos || []).map(x => `<tr><td class="small">${esc(fmtTs(x.ts))}</td><td class="small">${esc(x.quien)}</td><td>${x.valido ? '<span class="pill p-ok">Válido</span>' : `<span class="pill p-mute" title="${esc(x.nota)}">${esc(x.nota || 'No válido')}</span>`}</td></tr>`).join('') || '<tr><td class="muted">Sin escaneos</td></tr>'}</tbody></table></div></div>
+          <div class="grow" style="min-width:240px"><h3>Últimos accesos al panel</h3><div class="tw"><table><tbody>${(st.ultimos_accesos || []).map(x => `<tr><td class="small">${esc(fmtTs(x.ts))}</td><td class="small">${esc(x.email)}</td><td>${x.ok ? '<span class="pill p-ok">Entró</span>' : '<span class="pill p-bad">Contraseña incorrecta</span>'}</td></tr>`).join('') || '<tr><td class="muted">Sin accesos</td></tr>'}</tbody></table></div></div>
+        </div>` : '<p class="muted">Cargando…</p>'}</div>`;
+    const usuarios = `<div class="card"><h2>Usuarios del panel</h2>
+        <div class="tw"><table><thead><tr><th>Correo</th><th>Nombre</th><th>Rol</th><th>Último acceso</th><th></th></tr></thead><tbody>
+        ${us.map(u => `<tr class="${u.activo ? '' : 'baja'}"><td>${esc(u.email)}${u.fallas_recientes ? ` <span class="pill p-warn" title="Intentos fallidos en 24 h">${u.fallas_recientes} fallas</span>` : ''}</td><td>${esc(u.nombre)}</td><td>${u.rol === 'admin' ? '<span class="pill p-info">Administrador</span>' : '<span class="pill p-mute">Contador</span>'}</td><td class="small">${esc(u.ultimo_acceso ? fmtTs(u.ultimo_acceso) : '—')}</td>
+          <td style="white-space:nowrap">${S.resetFor === u.id ? `<form id="fReset" data-id="${esc(u.id)}" class="row" style="flex-wrap:nowrap"><input type="text" name="password" required minlength="8" placeholder="Nueva contraseña" autocomplete="off" style="width:150px"><button class="btn sm primary" type="submit">Guardar</button><button class="btn sm" type="button" data-act="resetNo">No</button></form>`
+            : `<button class="btn sm" data-act="resetPass" data-id="${esc(u.id)}">Nueva contraseña</button> ${S.yo && S.yo.email === u.email ? '<span class="muted small">Tú</span>' : u.activo ? `<button class="btn sm danger" data-act="desactivarUsuario" data-id="${esc(u.id)}">Quitar acceso</button>` : `<button class="btn sm" data-act="reactivarUsuario" data-id="${esc(u.id)}">Devolver acceso</button>`}`}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Cargando…</td></tr>'}
         </tbody></table></div>
         <h3 style="margin-top:16px">Dar acceso a otra persona</h3>
         <form id="fUsuario" class="editgrid">
           <label class="f grow" style="min-width:200px">Correo<input type="email" name="email" required></label>
           <label class="f">Nombre<input type="text" name="nombre"></label>
+          <label class="f">Rol<select name="rol"><option value="contador">Contador</option><option value="admin">Administrador</option></select></label>
           <label class="f">Contraseña inicial<input type="text" name="password" required minlength="8" autocomplete="off"></label>
           <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Dar acceso</button></form>
-        <p class="muted small" style="margin-bottom:0">Comparte la contraseña inicial en persona y pide que la cambie al entrar. Si alguien olvida su contraseña, vuelve a darle acceso con el mismo correo y una contraseña nueva.</p></div>`;
+        <p class="muted small" style="margin-bottom:0">Si el contador no puede entrar, usa “Nueva contraseña”: se le quita el bloqueo por intentos fallidos y se cierran sus sesiones. Comparte la contraseña en persona y pídele que la cambie.</p></div>`;
+    return sistema + usuarios + pass;
   }
+  async function cargarSistema() { try { const j = await api('cuenta', { op: 'sistema', datos: {} }); S.sistema = j.r; render(); } catch (e) { if (!e.silent) toast(e.message); } }
 
   function viewReporte() {
     const p = S.periodo;
     const ms = maestrosDePeriodo(p);
-    if (!maestrosList().length) return cardPendientes() + `<div class="card"><h2>Aún no hay maestros</h2><p class="muted">Da de alta a los maestros en <b>Maestros y celulares</b> e imprime el QR de la entrada en <b>Código QR y datos del patrón</b>.</p><button class="btn primary" data-act="tab" data-id="maestros">Agregar maestros</button></div>`;
+    if (!maestrosList().length) return cardPendientes() + `<div class="card"><h2>Aún no hay maestros</h2><p class="muted">Da de alta a los maestros en <b>Maestros y celulares</b> e imprime el QR de la entrada en <b>Código QR y patrones</b>.</p><button class="btn primary" data-act="tab" data-id="maestros">Agregar maestros</button></div>`;
     const idx = indices();
     if (S.sel && maestroById(S.sel)) return viewDetalle(S.sel, idx);
     const nav = `<div class="card"><div class="row between">
@@ -377,7 +404,8 @@
         <div><div style="font-weight:700;font-size:16px">Quincena del ${esc(periodLabel(p))}</div><div class="muted small">Corte: ${esc(periodCorte(p))}${S.loading ? ' · actualizando…' : ''}</div></div>
         <button class="btn sm" data-act="next" aria-label="Quincena siguiente">→</button>
         <button class="btn sm link" data-act="hoy">Quincena actual</button></div>
-        <button class="btn red" data-act="xlsx">Descargar Excel</button></div>
+        <div class="row">${variosPatrones() ? `<select id="selPatron" title="Patrón"><option value="0">Todos los patrones</option>${patronesActivos().map(pt => `<option value="${pt.id}" ${S.patronFiltro === pt.id ? 'selected' : ''}>${esc(nombrePatron(pt))}</option>`).join('')}</select>` : ''}
+        <button class="btn red" data-act="xlsx">Descargar Excel</button></div></div>
         ${S.csvText != null ? `<div style="margin-top:12px"><div class="muted small" style="margin-bottom:6px">No se pudo descargar aquí. Copia este texto y pégalo en Excel:</div><textarea class="csv" readonly>${esc(S.csvText)}</textarea><div class="row" style="margin-top:6px"><button class="btn sm" data-act="copycsv">Copiar</button><button class="btn sm link" data-act="closecsv">Cerrar</button></div></div>` : ''}
       </div>`;
     const today = D().hoy;
@@ -399,8 +427,8 @@
       <div class="stat"><span>Horas trabajadas</span><b>${hm(tot.minutos || 0) || '0:00'}</b></div>
       <div class="stat"><span>Tiempo extra</span><b>${hm(tot.extra || 0) || '0:00'}</b></div></div>`;
     const table = `<div class="card"><h2>Resumen por maestro</h2><p class="muted small" style="margin-top:-6px">Toca un maestro para ver el detalle por día y corregir registros.</p><div class="tw"><table>
-      <thead><tr><th>Maestro</th><th class="hide-sm">Horario</th><th class="num">Días lab.</th><th class="num">Asist.</th><th class="num">Retardos</th><th class="num hide-sm">Min. retardo</th><th class="num">Faltas</th><th class="num hide-sm">Justif.</th><th class="num hide-sm">Sin salida</th><th class="num">Horas</th><th class="num hide-sm">Extra</th></tr></thead>
-      <tbody>${rows.map(({ m, r }) => `<tr class="click ${m.baja ? 'baja' : ''}" data-act="ver" data-id="${esc(m.id)}"><td><b>${esc(m.nombre)}</b>${m.baja ? ' <span class="pill p-mute">Baja</span>' : ''}</td><td class="hide-sm">${esc(m.entrada || '—')}–${esc(m.salida || '—')}</td>
+      <thead><tr><th>Maestro</th>${variosPatrones() ? '<th class="hide-sm">Patrón</th>' : ''}<th class="hide-sm">Horario</th><th class="num">Días lab.</th><th class="num">Asist.</th><th class="num">Retardos</th><th class="num hide-sm">Min. retardo</th><th class="num">Faltas</th><th class="num hide-sm">Justif.</th><th class="num hide-sm">Sin salida</th><th class="num">Horas</th><th class="num hide-sm">Extra</th></tr></thead>
+      <tbody>${rows.map(({ m, r }) => `<tr class="click ${m.baja ? 'baja' : ''}" data-act="ver" data-id="${esc(m.id)}"><td><b>${esc(m.nombre)}</b>${m.baja ? ' <span class="pill p-mute">Baja</span>' : ''}</td>${variosPatrones() ? `<td class="hide-sm small">${esc(nombrePatron(patronById(m.patron_id)))}</td>` : ''}<td class="hide-sm">${esc(m.entrada || '—')}–${esc(m.salida || '—')}</td>
         <td class="num">${r.t.laborables}</td><td class="num">${r.t.asistencias}</td>
         <td class="num">${r.t.retardos ? `<span class="pill p-warn">${r.t.retardos}</span>` : 0}</td><td class="num hide-sm">${r.t.minRetardo}</td>
         <td class="num">${r.t.faltas ? `<span class="pill p-bad">${r.t.faltas}</span>` : 0}</td><td class="num hide-sm">${r.t.justificadas}</td>
@@ -432,7 +460,7 @@
         </form><div class="muted small" style="margin-top:6px">La corrección queda documentada con su motivo y fecha; los escaneos originales no se borran y aparecen en el Excel.</div></td></tr>`;
     }).join('');
     return `<div class="card"><div class="row between"><div class="row"><button class="btn sm" data-act="back">← Todos</button>
-        <div><div style="font-weight:700;font-size:16px">${esc(m.nombre)}${m.baja ? ' <span class="pill p-mute">Baja</span>' : ''}</div><div class="muted small">${m.num_empleado ? 'No. ' + esc(m.num_empleado) + ' · ' : ''}Horario ${esc(m.entrada || '—')}–${esc(m.salida || '—')} · ${(m.dias || [1,2,3,4,5]).map(x => DIAS[x]).join(', ')}</div></div></div>
+        <div><div style="font-weight:700;font-size:16px">${esc(m.nombre)}${m.baja ? ' <span class="pill p-mute">Baja</span>' : ''}</div><div class="muted small">${variosPatrones() ? esc(nombrePatron(patronById(m.patron_id))) + ' · ' : ''}${m.num_empleado ? 'No. ' + esc(m.num_empleado) + ' · ' : ''}Horario ${esc(m.entrada || '—')}–${esc(m.salida || '—')} · ${(m.dias || [1,2,3,4,5]).map(x => DIAS[x]).join(', ')}</div></div></div>
         <div class="row"><button class="btn sm" data-act="prev">←</button><span class="small" style="font-weight:600">${esc(periodLabel(p))}</span><button class="btn sm" data-act="next">→</button></div></div></div>
       <div class="stats"><div class="stat"><span>Asistencias</span><b>${t.asistencias}/${t.laborables}</b></div><div class="stat"><span>Retardos</span><b style="color:var(--warn)">${t.retardos}</b></div><div class="stat"><span>Min. de retardo</span><b>${t.minRetardo}</b></div><div class="stat"><span>Faltas</span><b style="color:var(--bad)">${t.faltas}</b></div><div class="stat"><span>Horas</span><b>${hm(t.minutos) || '0:00'}</b></div><div class="stat"><span>Extra</span><b>${hm(t.extra) || '0:00'}</b></div></div>
       <div class="card"><div class="tw"><table><thead><tr><th>Día</th><th>Horario</th><th>Entrada</th><th>Salida</th><th>Estado</th><th class="num">Horas</th><th class="num">Extra</th><th></th></tr></thead>
@@ -453,11 +481,12 @@
         <label class="f">Entrada<input type="time" name="entrada" value="07:00" required></label>
         <label class="f">Salida<input type="time" name="salida" value="14:00"></label>
         <label class="f">Fecha de alta<input type="date" name="alta" value="${esc(hoy)}"></label>
+        ${variosPatrones() ? `<label class="f">Patrón<select name="patron_id">${patronesActivos().map(pt => `<option value="${pt.id}">${esc(nombrePatron(pt))}</option>`).join('')}</select></label>` : ''}
         <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Agregar</button></form>
         <p class="muted small" style="margin-bottom:0">Se asignan días de lunes a viernes; puedes cambiarlos en la lista.</p></div>`;
     const list = `<div class="card"><div class="row between"><h2 style="margin:0">Maestros (${todos.length - nBajas} activos)</h2>${nBajas ? `<button class="btn sm link" data-act="toggleBajas">${S.verBajas ? 'Ocultar' : 'Ver'} bajas (${nBajas})</button>` : ''}</div>
       ${ms.length ? `<div class="tw" style="margin-top:10px"><table>
-      <thead><tr><th>Nombre</th><th>No. emp.</th><th>Entrada</th><th>Salida</th><th>Días</th><th>Celular registrado</th><th></th></tr></thead><tbody>
+      <thead><tr><th>Nombre</th>${variosPatrones() ? '<th>Patrón</th>' : ''}<th>No. emp.</th><th>Entrada</th><th>Salida</th><th>Días</th><th>Celular registrado</th><th></th></tr></thead><tbody>
       ${ms.map(m => {
         const cs = cels[m.id] || [];
         const dias = m.dias || [1,2,3,4,5];
@@ -466,7 +495,7 @@
         const acciones = m.baja ? `<span class="muted small">Baja ${esc(m.baja)}</span> <button class="btn sm" data-act="reactivar" data-id="${esc(m.id)}">Reactivar</button>`
           : S.confirmBaja === m.id ? `<form id="fBaja" data-id="${esc(m.id)}" class="row" style="flex-wrap:nowrap"><input type="date" name="baja" value="${esc(hoy)}" required><button class="btn sm danger solid" type="submit">Dar de baja</button><button class="btn sm" type="button" data-act="bajaNo">No</button></form>`
           : `<button class="btn sm danger" data-act="baja" data-id="${esc(m.id)}">Baja</button>`;
-        return `<tr class="${m.baja ? 'baja' : ''}"><td><input type="text" data-mid="${esc(m.id)}" data-field="nombre" value="${esc(m.nombre)}" style="min-width:170px"></td>
+        return `<tr class="${m.baja ? 'baja' : ''}"><td><input type="text" data-mid="${esc(m.id)}" data-field="nombre" value="${esc(m.nombre)}" style="min-width:170px"></td>${variosPatrones() ? `<td><select data-mid="${esc(m.id)}" data-field="patron_id">${patrones().filter(pt => pt.activo || pt.id === m.patron_id).map(pt => `<option value="${pt.id}" ${pt.id === m.patron_id ? 'selected' : ''}>${esc(nombrePatron(pt))}</option>`).join('')}</select></td>` : ''}
           <td><input type="text" data-mid="${esc(m.id)}" data-field="num_empleado" value="${esc(m.num_empleado || '')}" style="width:80px"></td>
           <td><input type="time" data-mid="${esc(m.id)}" data-field="entrada" value="${esc(m.entrada || '')}"></td>
           <td><input type="time" data-mid="${esc(m.id)}" data-field="salida" value="${esc(m.salida || '')}"></td>
@@ -492,12 +521,18 @@
         <form id="fIps" class="editgrid"><label class="f grow" style="min-width:260px">Direcciones IP permitidas (separadas por coma; vacío = cualquier red)<input type="text" name="ips" value="${esc(c.ips.join(', '))}" placeholder="Ej. 189.203.10.45"></label><button class="btn primary" type="submit">Guardar</button></form>
         ${ips.length ? `<div class="small muted" style="margin-top:10px">Direcciones de los escaneos recientes:</div><div class="chips" style="margin-top:6px">${ips.map(ip => `<button class="chip" style="border:none;cursor:pointer;padding-right:11px" data-act="addIp" data-k="${esc(ip)}">+ ${esc(ip)}</button>`).join('')}</div>` : ''}
         ${c.ips.length ? '<div class="note" style="margin-top:10px">Activo: los escaneos desde otras redes se rechazan (quedan en la bitácora como no válidos).</div>' : ''}</div>
-      <div class="card"><h2>Datos del patrón y ajustes</h2><p class="muted small" style="margin-top:-6px">Aparecen en el encabezado del Excel.</p><form id="fConfig" class="editgrid">
+      <div class="card"><h2>Patrones</h2><p class="muted small" style="margin-top:-6px">Hasta 3 patrones (razones sociales). Cada maestro se asigna a uno, y el Excel sale con los datos de su patrón. Activa el 2 o el 3 solo si los usas.</p>
+        ${patrones().map(pt => `<form class="fPatron editgrid" data-id="${pt.id}" style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px">
+          <div style="flex-basis:100%;display:flex;align-items:center;gap:10px"><b>Patrón ${pt.id}</b>${pt.id === 1 ? '<span class="pill p-ok">Activo</span>' : `<label class="f" style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" name="activo" ${pt.activo ? 'checked' : ''}> Activo</label>`}
+            <span class="muted small">${D().maestros.filter(m => m.patron_id === pt.id && !m.baja).length} maestros</span></div>
+          <label class="f">Nombre corto<input type="text" name="nombre" value="${esc(pt.nombre)}" placeholder="Ej. A.C." style="width:150px"></label>
+          <label class="f grow" style="min-width:220px">Razón social<input type="text" name="razon_social" value="${esc(pt.razon_social || '')}" placeholder="Ej. Colegio Hispanoamericano, A.C."></label>
+          <label class="f">RFC<input type="text" name="rfc" value="${esc(pt.rfc || '')}" style="width:150px"></label>
+          <label class="f">Registro patronal IMSS<input type="text" name="registro_patronal" value="${esc(pt.registro_patronal || '')}" style="width:150px"></label>
+          <label class="f grow" style="min-width:260px">Domicilio del centro de trabajo<input type="text" name="domicilio" value="${esc(pt.domicilio || '')}" placeholder="Calle, número, colonia, Durango, Dgo."></label>
+          <button class="btn primary sm" type="submit" ${S.busy ? 'disabled' : ''}>Guardar patrón ${pt.id}</button></form>`).join('')}</div>
+      <div class="card"><h2>Ajustes generales</h2><form id="fConfig" class="editgrid">
         <label class="f grow" style="min-width:240px">Nombre del centro de trabajo<input type="text" name="escuela" value="${esc(c.escuela)}"></label>
-        <label class="f grow" style="min-width:240px">Razón social<input type="text" name="razon_social" value="${esc(c.razonSocial)}" placeholder="Ej. Colegio Hispanoamericano, A.C."></label>
-        <label class="f">RFC del patrón<input type="text" name="rfc" value="${esc(c.rfc)}" style="width:160px"></label>
-        <label class="f">Registro patronal IMSS<input type="text" name="registro_patronal" value="${esc(c.registroPatronal)}" style="width:160px"></label>
-        <label class="f" style="flex-basis:100%">Domicilio del centro de trabajo<input type="text" name="domicilio" value="${esc(c.domicilio)}" placeholder="Calle, número, colonia, Durango, Dgo."></label>
         <label class="f">Tolerancia de entrada (min)<input type="number" min="0" max="120" name="tolerancia" value="${c.tolerancia}" style="width:110px"></label>
         <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Guardar</button></form></div>
       <div class="card"><h2>Días inhábiles</h2><p class="muted small" style="margin-top:-6px">Vacaciones, días de descanso obligatorio o suspensiones: no cuentan como falta.</p>
@@ -552,44 +587,52 @@
   }
 
   // ---------- Excel ----------
-  function encabezado(p) {
+  function encabezado(p, pt) {
     const c = cfg();
     return [
       [c.escuela.toUpperCase()],
       ['Registro electrónico de jornada laboral — entradas y salidas (hora del servidor, Durango)'],
-      ['Razón social:', c.razonSocial, '', 'RFC:', c.rfc, '', 'Registro patronal IMSS:', c.registroPatronal],
-      ['Domicilio del centro de trabajo:', c.domicilio],
+      ['Patrón:', pt.razon_social || nombrePatron(pt), '', 'RFC:', pt.rfc || '', '', 'Registro patronal IMSS:', pt.registro_patronal || ''],
+      ['Domicilio del centro de trabajo:', pt.domicilio || ''],
       ['Periodo:', `Quincena del ${periodLabel(p)}`, '', 'Fecha de emisión:', D().ahora || '', '', 'Tolerancia de entrada:', `${c.tolerancia} min`],
       ['Fundamento: art. 132 fr. XXXIV LFT (registro electrónico de jornada); conservar durante la relación laboral y un año después (art. 804 LFT).'],
       []
     ];
   }
-  function excelAoA() {
+  function excelAoA(pt) {
     const p = S.periodo; const idx = indices();
-    const all = maestrosDePeriodo(p).map(m => ({ m, r: resumen(m, p, idx) }));
-    const res = encabezado(p);
+    const all = maestrosDePeriodo(p, pt.id).map(m => ({ m, r: resumen(m, p, idx) }));
+    const res = encabezado(p, pt);
     res.push(['No. empleado', 'Maestro', 'Puesto', 'Horario', 'Días laborables', 'Asistencias', 'Retardos', 'Minutos de retardo', 'Faltas', 'Justificadas', 'Sin salida', 'Salidas anticipadas', 'Horas trabajadas', 'Tiempo extra', 'Firma de conformidad del trabajador']);
     for (const { m, r } of all) res.push([m.num_empleado || '', m.nombre, m.puesto || 'Docente', `${m.entrada || ''}-${m.salida || ''}`, r.t.laborables, r.t.asistencias, r.t.retardos, r.t.minRetardo, r.t.faltas, r.t.justificadas, r.t.sinSalida, r.t.anticipadas, hm(r.t.minutos) || '0:00', hm(r.t.extra) || '0:00', '']);
     res.push([]); res.push(['', '', '', '', '', '', '', '', '', '', '', '', '', 'Firma del patrón o representante:', '']);
-    const det = encabezado(p);
+    const det = encabezado(p, pt);
     det.push(['No. empleado', 'Maestro', 'Fecha', 'Día', 'Entrada programada', 'Salida programada', 'Hora de entrada', 'Hora de salida', 'Horas trabajadas', 'Tiempo extra', 'Estado', 'Entrada registrada (escaneo)', 'Salida registrada (escaneo)', 'Corrección', 'Motivo de la corrección', 'Fecha de la corrección']);
     for (const { m, r } of all) for (const d of r.dias) {
       det.push([m.num_empleado || '', m.nombre, d.k, DIAS[parseKey(d.k).getDay()], d.prog, d.progS, d.e, d.s, d.trabajado != null ? hm(d.trabajado) : '', d.extra ? hm(d.extra) : '',
         d.estado + (d.sinSalida ? ' / sin salida' : '') + (d.anticipada ? ' / salida anticipada' : ''), d.eOrig, d.sOrig, d.ajustado ? 'Sí' : 'No', d.nota, d.ajTs || '']);
     }
-    return { p, res, det };
+    return { res, det, n: all.length };
   }
   async function descargarExcel() {
-    const { p, res, det } = excelAoA();
-    const tsv = () => [...res, [], ...det].map(r => r.map(v => String(v ?? '').replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
-    const name = `Asistencia_Secundaria_Hispanoamericano_${p.y}-${pad(p.m+1)}_${p.h ? '2da' : '1ra'}_quincena.xlsx`;
+    const p = S.periodo;
+    const lista = S.patronFiltro ? [patronById(S.patronFiltro)] : patrones().filter(pt => pt.activo || maestrosDePeriodo(p, pt.id).length);
+    const partes = lista.map(pt => ({ pt, ...excelAoA(pt) })).filter((x, i) => x.n || i === 0);
+    const tsv = () => partes.flatMap(x => [...x.res, [], ...x.det, [], []]).map(r => r.map(v => String(v ?? '').replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
+    const suf = S.patronFiltro ? '_' + nombrePatron(patronById(S.patronFiltro)).replace(/[^\wáéíóúñÁÉÍÓÚÑ]+/g, '-') : '';
+    const name = `Asistencia_Secundaria_Hispanoamericano_${p.y}-${pad(p.m+1)}_${p.h ? '2da' : '1ra'}_quincena${suf}.xlsx`;
     if (typeof XLSX === 'undefined') { S.csvText = tsv(); render(); return; }
     const wb = XLSX.utils.book_new();
     const merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }, { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } }, { s: { r: 5, c: 0 }, e: { r: 5, c: 12 } }];
-    const s1 = XLSX.utils.aoa_to_sheet(res); s1['!cols'] = [10, 30, 12, 13, 10, 10, 9, 10, 8, 10, 9, 10, 11, 10, 30].map(w => ({ wch: w })); s1['!merges'] = merges;
-    const s2 = XLSX.utils.aoa_to_sheet(det); s2['!cols'] = [10, 30, 11, 6, 10, 10, 10, 10, 10, 9, 22, 12, 12, 10, 30, 18].map(w => ({ wch: w })); s2['!merges'] = merges;
-    XLSX.utils.book_append_sheet(wb, s1, 'Resumen quincena');
-    XLSX.utils.book_append_sheet(wb, s2, 'Entradas y salidas');
+    const usados = new Set();
+    const hoja = base => { let n = base.replace(/[\\\/\?\*\[\]:]/g, '').slice(0, 31), i = 2; while (usados.has(n)) n = base.slice(0, 28) + ' ' + i++; usados.add(n); return n; };
+    for (const x of partes) {
+      const tag = partes.length > 1 ? ' ' + nombrePatron(x.pt) : '';
+      const s1 = XLSX.utils.aoa_to_sheet(x.res); s1['!cols'] = [10, 30, 12, 13, 10, 10, 9, 10, 8, 10, 9, 10, 11, 10, 30].map(w => ({ wch: w })); s1['!merges'] = merges;
+      const s2 = XLSX.utils.aoa_to_sheet(x.det); s2['!cols'] = [10, 30, 11, 6, 10, 10, 10, 10, 10, 9, 22, 12, 12, 10, 30, 18].map(w => ({ wch: w })); s2['!merges'] = merges;
+      XLSX.utils.book_append_sheet(wb, s1, hoja('Resumen' + tag));
+      XLSX.utils.book_append_sheet(wb, s2, hoja('Entradas' + tag));
+    }
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     try { await saveFile(new Blob([buf]), name); S.csvText = null; render(); }
     catch (e) { S.csvText = tsv(); render(); }
@@ -605,7 +648,11 @@
       case 'verPrimera': S.primera = true; S.loginErr = null; render(); break;
       case 'verLogin': S.primera = false; S.loginErr = null; render(); break;
       case 'desactivarUsuario': if (await cuenta('desactivar', { id }, 'Acceso retirado')) cargarUsuarios(); break;
-      case 'tab': S.tab = id; S.sel = null; S.editDay = null; if (id === 'cuenta') S.usuarios = null; render(); break;
+      case 'reactivarUsuario': if (await cuenta('reactivar', { id }, 'Acceso devuelto')) cargarUsuarios(); break;
+      case 'resetPass': S.resetFor = id; render(); break;
+      case 'resetNo': S.resetFor = null; render(); break;
+      case 'refSistema': S.sistema = {}; render(); cargarSistema(); break;
+      case 'tab': S.tab = id; S.sel = null; S.editDay = null; if (id === 'cuenta') { S.usuarios = null; S.sistema = null; } render(); break;
       case 'prev': case 'next': case 'hoy':
         S.periodo = act === 'hoy' ? periodOf(new Date()) : periodShift(S.periodo, act === 'prev' ? -1 : 1);
         S.editDay = null; S.csvText = null; render(); await cargar(true); break;
@@ -640,10 +687,11 @@
   app.addEventListener('change', async e => {
     const el = e.target;
     if (el.dataset && el.dataset.asig) { S.asignar[el.dataset.asig] = el.value; return; }
+    if (el.id === 'selPatron') { S.patronFiltro = +el.value; S.csvText = null; render(); return; }
     const mid = el.dataset && el.dataset.mid; const field = el.dataset && el.dataset.field;
     if (!mid || !field) return;
     const v = el.value.trim(); if (field === 'nombre' && !v) { render(); return; }
-    const m = maestroById(mid); if (m && (m[field] || '') === v) return;
+    const m = maestroById(mid); if (m && String(m[field] ?? '') === v) return;
     await op('maestro_campo', { id: mid, campo: field, valor: v }, 'Guardado');
   });
   app.addEventListener('submit', async e => {
@@ -653,9 +701,18 @@
       try {
         if (f.id === 'fPrimera') await api('primera_cuenta', { codigo: g('codigo'), nombre: g('nombre'), email: g('email'), password: String(fd.get('password') || '') });
         const j = await api('login', { email: g('email'), password: String(fd.get('password') || '') });
-        S.token = j.token; S.yo = { nombre: j.nombre, email: j.email }; ls.set('chk_token', j.token); ls.set('chk_yo', JSON.stringify(S.yo));
+        S.token = j.token; S.yo = { nombre: j.nombre, email: j.email, rol: j.rol }; ls.set('chk_token', j.token); ls.set('chk_yo', JSON.stringify(S.yo));
         S.primera = false; S.busy = false; S.tab = 'reporte'; render(); await cargar();
       } catch (e) { S.busy = false; S.loginErr = e.message; render(); }
+      return;
+    }
+    if (f.classList && f.classList.contains('fPatron')) {
+      const id = +f.dataset.id;
+      await op('patron_guardar', { id, nombre: g('nombre'), razon_social: g('razon_social'), rfc: g('rfc'), registro_patronal: g('registro_patronal'), domicilio: g('domicilio'), activo: id === 1 ? true : !!fd.get('activo') }, `Patrón ${id} guardado`);
+      return;
+    }
+    if (f.id === 'fReset') {
+      if (await cuenta('reset_password', { id: f.dataset.id, password: String(fd.get('password') || '') }, 'Contraseña restablecida. Compártela en persona.')) { S.resetFor = null; cargarUsuarios(); }
       return;
     }
     if (f.id === 'fPass') {
@@ -663,12 +720,12 @@
       return;
     }
     if (f.id === 'fUsuario') {
-      if (await cuenta('agregar', { email: g('email'), nombre: g('nombre'), password: String(fd.get('password') || '') }, 'Acceso otorgado')) { f.reset(); cargarUsuarios(); }
+      if (await cuenta('agregar', { email: g('email'), nombre: g('nombre'), rol: g('rol'), password: String(fd.get('password') || '') }, 'Acceso otorgado')) { f.reset(); cargarUsuarios(); }
       return;
     }
     if (f.id === 'fAdd') {
       const nombre = g('nombre'); if (!nombre) return;
-      if (await op('maestro_agregar', { nombre, num_empleado: g('num_empleado'), puesto: g('puesto'), entrada: g('entrada'), salida: g('salida'), alta: g('alta') }, `${nombre} agregado`)) f.reset();
+      if (await op('maestro_agregar', { nombre, num_empleado: g('num_empleado'), puesto: g('puesto'), entrada: g('entrada'), salida: g('salida'), alta: g('alta'), patron_id: g('patron_id') || (S.patronFiltro || 1) }, `${nombre} agregado`)) f.reset();
     } else if (f.id === 'fAjuste') {
       const motivo = g('motivo'); if (!motivo) { toast('Escribe el motivo de la corrección'); return; }
       if (await op('ajuste_guardar', { maestro_id: S.sel, fecha: S.editDay, prog_e: g('prog_e'), prog_s: g('prog_s'), e: g('e'), s: g('s'), justificado: !!fd.get('j'), motivo }, 'Corrección guardada')) { S.editDay = null; render(); }
@@ -676,7 +733,7 @@
       const d = g('baja'); if (!d) return; S.confirmBaja = null;
       await op('maestro_baja', { id: f.dataset.id, fecha: d }, 'Baja registrada. Sus registros se conservan.');
     } else if (f.id === 'fConfig') {
-      await op('config_guardar', { escuela: g('escuela'), razon_social: g('razon_social'), rfc: g('rfc'), registro_patronal: g('registro_patronal'), domicilio: g('domicilio'), tolerancia: parseInt(g('tolerancia'), 10) || 0 }, 'Datos guardados');
+      await op('config_guardar', { escuela: g('escuela'), tolerancia: parseInt(g('tolerancia'), 10) || 0 }, 'Ajustes guardados');
     } else if (f.id === 'fIps') {
       const ips = g('ips').split(/[\s,]+/).filter(Boolean);
       await op('ips_guardar', { ips }, ips.length ? 'Red permitida guardada' : 'Se aceptan escaneos desde cualquier red');
@@ -690,7 +747,7 @@
     S.token = ls.get('chk_token');
     try { S.yo = JSON.parse(ls.get('chk_yo') || 'null'); } catch (e) { S.yo = null; }
     render();
-    if (S.token) await cargar();
+    if (S.token) { await cargar(); try { const j = await api('cuenta', { op: 'yo', datos: {} }); S.yo = j.r; ls.set('chk_yo', JSON.stringify(S.yo)); render(); } catch (e) {} }
     setInterval(() => { if (S.token && !document.hidden && !S.busy && !S.editDay && S.tab === 'reporte') cargar(true); }, 60000);
   }
   render();
