@@ -153,6 +153,100 @@
   };
   const periodCorte = p => { const r = periodRange(p); return `${r.end.getDate()} de ${MESES[p.m]}`; };
 
+  // ---------- intérprete de indicaciones ("del 20 de diciembre al 7 de enero son vacaciones") ----------
+  const MES_N = { ene: 1, enero: 1, feb: 2, febrero: 2, mar: 3, marzo: 3, abr: 4, abril: 4, may: 5, mayo: 5, jun: 6, junio: 6, jul: 7, julio: 7,
+    ago: 8, agosto: 8, sep: 9, sept: 9, set: 9, septiembre: 9, setiembre: 9, oct: 10, octubre: 10, nov: 11, noviembre: 11, dic: 12, diciembre: 12 };
+  const normTxt = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[“”"«»]/g, ' ').replace(/\s+/g, ' ').trim();
+  const isoDate = (y, m, d) => { const dt = new Date(y, m - 1, d); return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d ? `${y}-${pad(m)}-${pad(d)}` : null; };
+  const TIPOS = [
+    ['vacaciones', 'Vacaciones', /vacacion/],
+    ['suspension', 'Suspensión de clases', /suspen/],
+    ['festivo', 'Día festivo', /festiv|feriad|descanso obligatorio/],
+    ['cte', 'Consejo Técnico Escolar', /consejo tecnico|\bcte\b/],
+    ['incapacidad', 'Incapacidad', /incapacidad/],
+    ['permiso', 'Permiso', /permiso|licencia/],
+    ['comision', 'Comisión', /comision/],
+    ['inhabil', 'Día inhábil', /.*/],
+  ];
+  function interpretar(texto, hoyIso, maestros) {
+    const t = normTxt(texto);
+    const hoy = parseKey(hoyIso); const Y = hoy.getFullYear();
+    const MES = '(ene(?:ro)?|feb(?:rero)?|mar(?:zo)?|abr(?:il)?|may(?:o)?|jun(?:io)?|jul(?:io)?|ago(?:sto)?|sept?(?:iembre)?|set(?:iembre)?|oct(?:ubre)?|nov(?:iembre)?|dic(?:iembre)?)';
+    const AN = '(?:\\s*(?:de|del)?\\s*(\\d{4}))?';
+    const rangos = [];
+    const usado = [];
+    const marca = (a, b) => usado.push([a, b]);
+    const libre = (a, b) => !usado.some(([x, y]) => a < y && b > x);
+    let m;
+    // 1) rango con meses: "del 20 de diciembre (2026) al 7 de enero (2027)" o "del 3 al 5 de noviembre"
+    const reR = new RegExp(`(?:del|desde el|desde|de)\\s+(?:dia\\s+)?(\\d{1,2})(?:\\s+de\\s+${MES}${AN})?\\s+(?:al|hasta el|hasta|a)\\s+(?:dia\\s+)?(\\d{1,2})\\s+de\\s+${MES}${AN}`, 'g');
+    while ((m = reR.exec(t))) {
+      let [, d1, m1, y1, d2, m2, y2] = m;
+      const M2 = MES_N[m2] || MES_N[m2.slice(0, 3)];
+      const M1 = m1 ? (MES_N[m1] || MES_N[m1.slice(0, 3)]) : M2;
+      let Y2 = y2 ? +y2 : null, Y1 = y1 ? +y1 : null;
+      if (!Y1 && !Y2) { Y1 = Y; Y2 = M2 < M1 ? Y + 1 : Y; }
+      else if (!Y1) Y1 = M1 > M2 ? Y2 - 1 : Y2;
+      else if (!Y2) Y2 = M2 < M1 ? Y1 + 1 : Y1;
+      rangos.push([isoDate(Y1, M1, +d1), isoDate(Y2, M2, +d2)]); marca(m.index, m.index + m[0].length);
+    }
+    // 2) rango numérico: "del 20/12/2026 al 07/01/2027"
+    const reN = /(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\s+(?:al|a|hasta(?: el)?|-)\s+(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?/g;
+    while ((m = reN.exec(t))) {
+      if (!libre(m.index, m.index + m[0].length)) continue;
+      const fy = y => !y ? null : (+y < 100 ? 2000 + +y : +y);
+      let [, d1, m1, y1, d2, m2, y2] = m; let Y1 = fy(y1), Y2 = fy(y2);
+      if (!Y1 && !Y2) { Y1 = Y; Y2 = +m2 < +m1 ? Y + 1 : Y; } else if (!Y1) Y1 = +m1 > +m2 ? Y2 - 1 : Y2; else if (!Y2) Y2 = +m2 < +m1 ? Y1 + 1 : Y1;
+      rangos.push([isoDate(Y1, +m1, +d1), isoDate(Y2, +m2, +d2)]); marca(m.index, m.index + m[0].length);
+    }
+    // 3) lista de días: "los días 2, 3 y 5 de noviembre (2026)" / "el 2 de noviembre"
+    const reL = new RegExp(`(\\d{1,2}(?:\\s*(?:,|y|e)\\s*\\d{1,2})*)\\s+de\\s+${MES}${AN}`, 'g');
+    while ((m = reL.exec(t))) {
+      if (!libre(m.index, m.index + m[0].length)) continue;
+      const M = MES_N[m[2]] || MES_N[m[2].slice(0, 3)]; const YY = m[3] ? +m[3] : Y;
+      for (const d of m[1].split(/\s*(?:,|y|e)\s*/)) { const iso = isoDate(YY, M, +d); if (iso) rangos.push([iso, iso]); }
+      marca(m.index, m.index + m[0].length);
+    }
+    // 4) fecha numérica suelta: "02/11/2026"
+    const reD = /\b(\d{1,2})[\/\-.](\d{1,2})(?:[\/\-.](\d{2,4}))?\b/g;
+    while ((m = reD.exec(t))) {
+      if (!libre(m.index, m.index + m[0].length)) continue;
+      const y = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : Y;
+      const iso = isoDate(y, +m[2], +m[1]); if (iso) rangos.push([iso, iso]);
+    }
+    // 5) hoy / ayer / mañana
+    if (!rangos.length) {
+      const off = /\bayer\b/.test(t) ? -1 : /\bhoy\b/.test(t) ? 0 : /\bmanana\b/.test(t) ? 1 : null;
+      if (off !== null) { const d = new Date(hoy); d.setDate(d.getDate() + off); rangos.push([keyOf(d), keyOf(d)]); }
+    }
+    const validos = rangos.filter(([a, b]) => a && b);
+    const errores = rangos.length > validos.length ? ['Alguna fecha no existe en el calendario.'] : [];
+    // juntar días consecutivos
+    validos.sort((x, y) => x[0] < y[0] ? -1 : 1);
+    const unidos = [];
+    for (const [a, b] of validos) {
+      const last = unidos[unidos.length - 1];
+      if (last) { const sig = parseKey(last[1]); sig.setDate(sig.getDate() + 1); if (a <= keyOf(sig)) { if (b > last[1]) last[1] = b; continue; } }
+      unidos.push([a, b]);
+    }
+    for (const [a, b] of unidos) if (b < a) errores.push('La fecha final es anterior a la inicial.');
+    const tipo = TIPOS.find(([, , re]) => re.test(t));
+    // maestros mencionados por nombre
+    const elegidos = [];
+    for (const mm of maestros) {
+      const tk = normTxt(mm.nombre).split(' ').filter(w => w.length > 2);
+      let hit = false;
+      for (let i = 0; i < tk.length - 1 && !hit; i++) if (t.includes(tk[i] + ' ' + tk[i + 1])) hit = true;
+      if (!hit && tk.length === 1 && new RegExp(`\\b${tk[0]}\\b`).test(t)) hit = true;
+      if (hit) elegidos.push(mm.id);
+    }
+    let motivo = tipo[1];
+    const mo = t.match(/(?:por|motivo:?)\s+([a-z0-9 ]{3,60}?)(?:[.,;]|$)/);
+    if (mo && !/^(lo tanto|eso)/.test(mo[1])) motivo = motivo === 'Día inhábil' ? mo[1].charAt(0).toUpperCase() + mo[1].slice(1) : `${motivo} (${mo[1]})`;
+    return { rangos: unidos, tipo: tipo[0], motivo, maestros: elegidos, errores };
+  }
+
+
   // ---------- estado ----------
   const S = {
     token: null, yo: null, patronFiltro: 0, sistema: null, fatal: null, err: null, loginErr: null, primera: false, usuarios: null,
@@ -226,25 +320,28 @@
   function dayInfo(m, k, rec, aj, today) {
     const c = cfg();
     const wd = parseKey(k).getDay();
-    const inhabil = D().inhabiles.includes(k);
+    const pers = (D().periodos || []).filter(p => p.desde <= k && k <= p.hasta && (!p.maestros || p.maestros.includes(m.id)));
+    const general = pers.find(p => !p.maestros), personal = pers.find(p => p.maestros);
+    const inhabil = !!general;
     const laborable = (m.dias || [1,2,3,4,5]).includes(wd) && !inhabil;
     const prog = (aj && aj.prog_e) || (rec && rec.prog_e) || m.entrada || '';
     const progS = (aj && aj.prog_s) || (rec && rec.prog_s) || m.salida || '';
     const eOrig = (rec && rec.e) || '', sOrig = (rec && rec.s) || '';
     const e = aj ? (aj.e || '') : eOrig;
     const s = aj ? (aj.s || '') : sOrig;
-    const j = !!(aj && aj.justificado);
-    const info = { k, prog, progS, e, s, eOrig, sOrig, j, ajustado: !!aj, nota: (aj && aj.motivo) || '', ajTs: aj && aj.actualizado,
+    const j = !!(aj && aj.justificado) || !!personal;
+    const notaP = (general || personal) ? (general || personal).motivo : '';
+    const info = { k, prog, progS, e, s, eOrig, sOrig, j, ajustado: !!aj, nota: [(aj && aj.motivo) || '', notaP].filter(Boolean).join(' · '), ajTs: aj && aj.actualizado, ajPor: aj && aj.por, inhabil, justificada: false,
       laborable, cuenta: false, estado: '', cls: 'p-mute', retardo: 0, trabajado: null, extra: 0,
       sinSalida: false, anticipada: false, falta: false, asistencia: false, fuera: false };
     if (k > today) { info.estado = 'Pendiente'; info.fuera = true; return info; }
     if (k < m.alta && !e) { info.estado = 'Antes del alta'; info.fuera = true; return info; }
     if (m.baja && k > m.baja) { info.estado = 'Baja'; info.fuera = true; return info; }
     if (!e) {
-      if (inhabil) { info.estado = 'Día inhábil'; info.cls = 'p-info'; return info; }
+      if (inhabil) { info.estado = general.motivo || 'Día inhábil'; info.cls = 'p-info'; return info; }
       if (!laborable) { info.estado = 'Descanso'; return info; }
       info.cuenta = true;
-      if (j) { info.estado = 'Justificada'; info.cls = 'p-info'; return info; }
+      if (j) { info.estado = (aj && aj.justificado) ? 'Justificada' : `Justificada · ${personal.motivo}`; info.cls = 'p-info'; info.justificada = true; return info; }
       if (k === today) { info.estado = 'Sin registro aún'; info.cuenta = false; return info; }
       info.estado = 'Falta'; info.cls = 'p-bad'; info.falta = true; return info;
     }
@@ -252,7 +349,7 @@
     const diff = (toMin(e) ?? 0) - (toMin(prog) ?? toMin(e) ?? 0);
     if (prog && diff > c.tolerancia) {
       info.retardo = diff;
-      if (j) { info.estado = 'Retardo justificado'; info.cls = 'p-info'; }
+      if (j) { info.estado = 'Retardo justificado'; info.cls = 'p-info'; info.justificada = true; }
       else { info.estado = `Retardo ${diff} min`; info.cls = 'p-warn'; }
     } else { info.estado = 'A tiempo'; info.cls = 'p-ok'; }
     if (s) {
@@ -262,7 +359,7 @@
       if (jornada != null && info.trabajado > jornada) info.extra = info.trabajado - jornada;
       if (!laborable) info.extra = Math.max(0, info.trabajado);
     } else if (k < today) info.sinSalida = true;
-    if (!laborable) info.estado = (inhabil ? 'Inhábil · ' : 'Día extra · ') + info.estado;
+    if (!laborable) info.estado = (inhabil ? (general.motivo || 'Inhábil') + ' · ' : 'Día extra · ') + info.estado;
     return info;
   }
   function indices() {
@@ -280,13 +377,13 @@
     for (const k of r.keys) {
       const info = dayInfo(m, k, rec[k], aj[k], today);
       if (info.fuera) continue;
-      const visible = info.cuenta || info.asistencia || info.ajustado || (info.laborable && k <= today) || info.estado === 'Día inhábil';
+      const visible = info.cuenta || info.asistencia || info.ajustado || (info.laborable && k <= today) || (info.inhabil && (m.dias || [1,2,3,4,5]).includes(parseKey(k).getDay()));
       if (visible) dias.push(info);
       if (info.cuenta) t.laborables++;
       if (info.asistencia) t.asistencias++;
       if (info.retardo && !info.j) { t.retardos++; t.minRetardo += info.retardo; }
       if (info.falta) t.faltas++;
-      if (info.j && (info.estado === 'Justificada' || info.retardo)) t.justificadas++;
+      if (info.justificada) t.justificadas++;
       if (info.sinSalida) t.sinSalida++;
       if (info.anticipada) t.anticipadas++;
       if (info.trabajado > 0) t.minutos += info.trabajado;
@@ -305,10 +402,10 @@
     else if (!S.data) {
       html += `<div class="card loading">${S.err ? `<div class="warnbox" style="text-align:left">${esc(S.err)}</div><p><button class="btn" data-act="reload">Reintentar</button></p>` : 'Cargando información…'}</div>`;
     } else {
-      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['config', 'Código QR y patrones'], ['cuenta', esAdmin() ? 'Administración' : 'Mi contraseña']];
+      const tabs = [['reporte', 'Reporte quincenal'], ['maestros', `Maestros y celulares${pendientes().length ? ` (${pendientes().length})` : ''}`], ['periodos', 'Vacaciones y permisos'], ['config', 'Código QR y patrones'], ['cuenta', esAdmin() ? 'Administración' : 'Mi contraseña']];
       html += `<div class="tabs">${tabs.map(([id, l]) => `<button class="tab ${S.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}">${l}</button>`).join('')}</div>`;
       if (S.err) html += `<div class="warnbox" style="margin-bottom:12px">${esc(S.err)} <button class="btn sm" data-act="reload">Reintentar</button></div>`;
-      html += S.tab === 'maestros' ? viewMaestros() : S.tab === 'config' ? viewConfig() : S.tab === 'cuenta' ? viewCuenta() : viewReporte();
+      html += S.tab === 'periodos' ? viewPeriodos() : S.tab === 'maestros' ? viewMaestros() : S.tab === 'config' ? viewConfig() : S.tab === 'cuenta' ? viewCuenta() : viewReporte();
     }
     if (S.toast) html += `<div class="toast">${esc(S.toast)}</div>`;
     app.innerHTML = html;
@@ -392,6 +489,56 @@
     return sistema + usuarios + pass;
   }
   async function cargarSistema() { try { const j = await api('cuenta', { op: 'sistema', datos: {} }); S.sistema = j.r; render(); } catch (e) { if (!e.silent) toast(e.message); } }
+
+  function fmtRango(a, b) {
+    const f = k => { const d = parseKey(k); return `${d.getDate()} ${MESES[d.getMonth()].slice(0, 3)} ${d.getFullYear()}`; };
+    return a === b ? `${DIAS[parseKey(a).getDay()]} ${f(a)}` : `${f(a)} al ${f(b)}`;
+  }
+  function diasLaborablesEn(a, b) { let n = 0; for (let d = parseKey(a); keyOf(d) <= b; d.setDate(d.getDate() + 1)) if (d.getDay() >= 1 && d.getDay() <= 5) n++; return n; }
+  function viewPeriodos() {
+    const ms = maestrosList(false);
+    const pv = S.prev;
+    const ejemplos = ['El día 2 de noviembre fue inhábil', 'Del 20 de diciembre 2026 al 7 de enero 2027 son vacaciones', 'Los días 16 y 17 de noviembre hubo suspensión de clases por lluvia', 'Permiso para José Pérez del 3 al 5 de diciembre'];
+    let prevHtml = '';
+    if (pv) {
+      const nombres = ms.filter(m => pv.maestros.includes(m.id)).map(m => m.nombre);
+      prevHtml = `<form id="fPeriodo" style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+        <h3>Esto entendí — revisa y confirma</h3>
+        ${pv.errores.length ? `<div class="warnbox" style="margin-bottom:10px">${esc(pv.errores.join(' '))}</div>` : ''}
+        ${pv.rangos.map((r, i) => `<div class="editgrid" style="margin-bottom:8px"><label class="f">Desde<input type="date" name="desde_${i}" value="${r[0]}" required></label><label class="f">Hasta<input type="date" name="hasta_${i}" value="${r[1]}" required></label>
+          <span class="muted small" style="padding-bottom:9px">${esc(fmtRango(r[0], r[1]))} · ${diasLaborablesEn(r[0], r[1])} día(s) de lunes a viernes</span></div>`).join('')}
+        <div class="editgrid">
+          <label class="f">Tipo<select name="tipo">${TIPOS.map(([id, nom]) => `<option value="${id}" ${pv.tipo === id ? 'selected' : ''}>${esc(nom)}</option>`).join('')}</select></label>
+          <label class="f grow" style="min-width:240px">Motivo (aparece en el reporte y en el Excel)<input type="text" name="motivo" value="${esc(pv.motivo)}" required></label>
+        </div>
+        <div style="margin-top:10px"><div class="f" style="font-size:13px;color:var(--muted);font-weight:500;margin-bottom:6px">Aplica a</div>
+          <label style="margin-right:16px"><input type="radio" name="aplica" value="todos" ${pv.maestros.length ? '' : 'checked'} data-act="aplica"> Todos los maestros <span class="muted small">(el día no cuenta como laborable)</span></label>
+          <label><input type="radio" name="aplica" value="algunos" ${pv.maestros.length ? 'checked' : ''} data-act="aplica"> Solo algunos <span class="muted small">(sus faltas quedan justificadas)</span></label>
+          <div id="listaM" class="chips" style="margin-top:8px;${pv.maestros.length ? '' : 'display:none'}">${ms.map(m => `<label class="chip" style="padding-right:11px;cursor:pointer"><input type="checkbox" name="m" value="${esc(m.id)}" ${pv.maestros.includes(m.id) ? 'checked' : ''}> ${esc(m.nombre)}</label>`).join('') || '<span class="muted small">No hay maestros activos</span>'}</div>
+        </div>
+        <div class="row" style="margin-top:14px"><button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Guardar${pv.rangos.length > 1 ? ` (${pv.rangos.length} periodos)` : ''}</button><button class="btn" type="button" data-act="cancelPrev">Cancelar</button></div>
+      </form>`;
+    }
+    const lista = (D().periodos || []);
+    const hoy = D().hoy;
+    const fila = p => {
+      const aplica = p.maestros ? p.maestros.map(id => (maestroById(id) || {}).nombre || 'Maestro eliminado').join(', ') : 'Todos los maestros';
+      return `<tr><td style="white-space:nowrap"><b>${esc(fmtRango(p.desde, p.hasta))}</b></td><td>${esc(p.motivo)}${p.texto ? `<div class="muted small">“${esc(p.texto)}”</div>` : ''}</td>
+        <td class="small">${p.maestros ? `<span class="pill p-warn">Algunos</span> ${esc(aplica)}` : '<span class="pill p-info">Todos</span>'}</td>
+        <td class="small muted">${esc(p.creado_por || '')}${p.creado ? '<br>' + esc(fmtTs(p.creado)) : ''}</td>
+        <td>${S.confirmPer === p.id ? `<div class="row" style="flex-wrap:nowrap"><button class="btn sm danger solid" data-act="quitarPerOk" data-id="${esc(p.id)}">Quitar</button><button class="btn sm" data-act="quitarPerNo">No</button></div>` : `<button class="btn sm danger" data-act="quitarPer" data-id="${esc(p.id)}">Quitar</button>`}</td></tr>`;
+    };
+    const proximos = lista.filter(p => p.hasta >= hoy), pasados = lista.filter(p => p.hasta < hoy);
+    const tabla = (arr) => `<div class="tw"><table><thead><tr><th>Fechas</th><th>Motivo</th><th>Aplica a</th><th>Registró</th><th></th></tr></thead><tbody>${arr.map(fila).join('')}</tbody></table></div>`;
+    return `<div class="card"><h2>Escribe la indicación</h2>
+        <p class="muted small" style="margin-top:-6px">Escribe como lo dirías normalmente. El sistema entiende fechas sueltas, rangos y nombres de maestros, y te muestra lo que entendió antes de guardar. Las faltas de esos días se justifican solas, también las de quincenas pasadas.</p>
+        <form id="fIndicacion" class="row" style="align-items:stretch"><textarea name="texto" rows="2" class="grow" style="min-width:260px;resize:vertical" placeholder="Ej. Del 20 de diciembre 2026 al 7 de enero 2027 son vacaciones">${esc(S.indicacion || '')}</textarea>
+          <button class="btn primary" type="submit">Interpretar</button></form>
+        <div class="chips" style="margin-top:8px">${ejemplos.map(e => `<button class="chip" style="border:none;cursor:pointer;padding-right:11px" data-act="ejemplo" data-k="${esc(e)}">${esc(e)}</button>`).join('')}</div>
+        ${prevHtml}</div>
+      <div class="card"><h2>Próximos y vigentes</h2>${proximos.length ? tabla(proximos) : '<p class="muted">No hay periodos próximos.</p>'}</div>
+      ${pasados.length ? `<div class="card"><h2>Anteriores</h2>${tabla(pasados)}</div>` : ''}`;
+  }
 
   function viewReporte() {
     const p = S.periodo;
@@ -535,9 +682,6 @@
         <label class="f grow" style="min-width:240px">Nombre del centro de trabajo<input type="text" name="escuela" value="${esc(c.escuela)}"></label>
         <label class="f">Tolerancia de entrada (min)<input type="number" min="0" max="120" name="tolerancia" value="${c.tolerancia}" style="width:110px"></label>
         <button class="btn primary" type="submit" ${S.busy ? 'disabled' : ''}>Guardar</button></form></div>
-      <div class="card"><h2>Días inhábiles</h2><p class="muted small" style="margin-top:-6px">Vacaciones, días de descanso obligatorio o suspensiones: no cuentan como falta.</p>
-        <form id="fInh" class="row"><input type="date" name="d" required><input type="text" name="motivo" placeholder="Motivo (opcional)"><button class="btn" type="submit">Agregar día</button></form>
-        <div class="chips" style="margin-top:12px">${D().inhabiles.map(k => `<span class="chip">${fmtDay(k)} ${k.slice(0,4)}<button data-act="rmInh" data-k="${k}" title="Quitar">×</button></span>`).join('') || '<span class="muted small">Ninguno</span>'}</div></div>
       <div class="card legal"><b>Cumplimiento.</b> Cada escaneo queda en una bitácora con la hora del servidor que no se puede borrar ni modificar. Así se registra electrónicamente el inicio y término de la jornada (art. 132, fr. XXXIV, LFT, obligatorio desde el 1 de enero de 2027) y se conservan los controles de asistencia durante la relación laboral y un año después (art. 804 LFT). Las correcciones del contador se guardan aparte, con motivo y fecha. Para que el registro haga prueba plena, recaba la conformidad del maestro: el Excel trae una columna de firma en cada quincena, y conviene incluir el uso del checador en el contrato o reglamento interior.</div>`;
   }
 
@@ -607,10 +751,10 @@
     for (const { m, r } of all) res.push([m.num_empleado || '', m.nombre, m.puesto || 'Docente', `${m.entrada || ''}-${m.salida || ''}`, r.t.laborables, r.t.asistencias, r.t.retardos, r.t.minRetardo, r.t.faltas, r.t.justificadas, r.t.sinSalida, r.t.anticipadas, hm(r.t.minutos) || '0:00', hm(r.t.extra) || '0:00', '']);
     res.push([]); res.push(['', '', '', '', '', '', '', '', '', '', '', '', '', 'Firma del patrón o representante:', '']);
     const det = encabezado(p, pt);
-    det.push(['No. empleado', 'Maestro', 'Fecha', 'Día', 'Entrada programada', 'Salida programada', 'Hora de entrada', 'Hora de salida', 'Horas trabajadas', 'Tiempo extra', 'Estado', 'Entrada registrada (escaneo)', 'Salida registrada (escaneo)', 'Corrección', 'Motivo de la corrección', 'Fecha de la corrección']);
+    det.push(['No. empleado', 'Maestro', 'Fecha', 'Día', 'Entrada programada', 'Salida programada', 'Hora de entrada', 'Hora de salida', 'Horas trabajadas', 'Tiempo extra', 'Estado', 'Entrada registrada (escaneo)', 'Salida registrada (escaneo)', 'Corrección', 'Motivo / justificación', 'Fecha de la corrección', 'Corrigió']);
     for (const { m, r } of all) for (const d of r.dias) {
       det.push([m.num_empleado || '', m.nombre, d.k, DIAS[parseKey(d.k).getDay()], d.prog, d.progS, d.e, d.s, d.trabajado != null ? hm(d.trabajado) : '', d.extra ? hm(d.extra) : '',
-        d.estado + (d.sinSalida ? ' / sin salida' : '') + (d.anticipada ? ' / salida anticipada' : ''), d.eOrig, d.sOrig, d.ajustado ? 'Sí' : 'No', d.nota, d.ajTs || '']);
+        d.estado + (d.sinSalida ? ' / sin salida' : '') + (d.anticipada ? ' / salida anticipada' : ''), d.eOrig, d.sOrig, d.ajustado ? 'Sí' : 'No', d.nota, d.ajTs || '', d.ajPor || '']);
     }
     return { res, det, n: all.length };
   }
@@ -644,6 +788,12 @@
     const { act, id, k } = b.dataset;
     switch (act) {
       case 'reload': await cargar(); break;
+      case 'ejemplo': S.indicacion = k; S.prev = null; render(); break;
+      case 'cancelPrev': S.prev = null; render(); break;
+      case 'aplica': { const lm = document.getElementById('listaM'); if (lm) lm.style.display = b.value === 'algunos' ? '' : 'none'; return; }
+      case 'quitarPer': S.confirmPer = id; render(); break;
+      case 'quitarPerNo': S.confirmPer = null; render(); break;
+      case 'quitarPerOk': S.confirmPer = null; await op('periodo_quitar', { id }, 'Periodo quitado'); break;
       case 'logout': try { await api('logout', {}); } catch (_) {} cerrarSesionLocal(); break;
       case 'verPrimera': S.primera = true; S.loginErr = null; render(); break;
       case 'verLogin': S.primera = false; S.loginErr = null; render(); break;
@@ -680,7 +830,6 @@
       case 'bajaNo': S.confirmBaja = null; render(); break;
       case 'reactivar': await op('maestro_reactivar', { id }, 'Maestro reactivado. Si necesita checar, que escanee y asígnale su celular.'); break;
       case 'toggleBajas': S.verBajas = !S.verBajas; render(); break;
-      case 'rmInh': await op('inhabil_quitar', { fecha: k }, 'Día quitado'); break;
       case 'addIp': { const cur = cfg().ips; if (!cur.includes(k)) await op('ips_guardar', { ips: [...cur, k] }, 'Red permitida guardada'); break; }
     }
   });
@@ -715,6 +864,26 @@
       if (await cuenta('reset_password', { id: f.dataset.id, password: String(fd.get('password') || '') }, 'Contraseña restablecida. Compártela en persona.')) { S.resetFor = null; cargarUsuarios(); }
       return;
     }
+    if (f.id === 'fIndicacion') {
+      const texto = g('texto'); S.indicacion = texto;
+      if (!texto) return;
+      const r = interpretar(texto, D().hoy, maestrosList(false));
+      if (!r.rangos.length) { S.prev = null; toast('No encontré fechas en la indicación. Ej.: "el 2 de noviembre" o "del 20 de diciembre al 7 de enero".'); return; }
+      S.prev = { ...r, texto }; render(); return;
+    }
+    if (f.id === 'fPeriodo') {
+      const pv = S.prev; if (!pv) return;
+      const algunos = fd.get('aplica') === 'algunos';
+      const maestros = algunos ? fd.getAll('m').map(String) : [];
+      if (algunos && !maestros.length) { toast('Elige al menos un maestro'); return; }
+      const motivo = g('motivo'); if (!motivo) { toast('Escribe el motivo'); return; }
+      const items = pv.rangos.map((_, i) => ({ desde: g('desde_' + i), hasta: g('hasta_' + i) }));
+      if (items.some(x => !x.desde || !x.hasta || x.hasta < x.desde)) { toast('Revisa las fechas'); return; }
+      S.busy = true; render();
+      try { for (const x of items) await api('op', { op: 'periodo_agregar', datos: { ...x, tipo: g('tipo'), motivo, maestros, texto: pv.texto } }); S.prev = null; S.indicacion = ''; S.busy = false; toast('Guardado. Las faltas de esos días quedan justificadas.'); await cargar(true); }
+      catch (e) { S.busy = false; if (!e.silent) toast(e.message); else render(); }
+      return;
+    }
     if (f.id === 'fPass') {
       if (await cuenta('cambiar_password', { actual: String(fd.get('actual') || ''), nueva: String(fd.get('nueva') || '') }, 'Contraseña cambiada')) f.reset();
       return;
@@ -737,8 +906,6 @@
     } else if (f.id === 'fIps') {
       const ips = g('ips').split(/[\s,]+/).filter(Boolean);
       await op('ips_guardar', { ips }, ips.length ? 'Red permitida guardada' : 'Se aceptan escaneos desde cualquier red');
-    } else if (f.id === 'fInh') {
-      const d = g('d'); if (!d) return; await op('inhabil_agregar', { fecha: d, motivo: g('motivo') }, 'Día inhábil agregado');
     }
   });
 
