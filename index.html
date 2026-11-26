@@ -101,6 +101,24 @@
   .qrbox{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
   .qrbox canvas{border:1px solid var(--line);border-radius:10px;background:#fff;max-width:100%}
   .legal{font-size:12.5px;color:var(--muted);line-height:1.5}
+
+  .cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+  .cal-h{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;text-align:center;padding:2px 0}
+  .cal-d{border:1px solid var(--line);background:#fff;border-radius:10px;min-height:74px;padding:6px 7px;display:flex;flex-direction:column;align-items:flex-start;gap:4px;cursor:pointer;text-align:left;min-width:0}
+  .cal-d:hover:not(:disabled){border-color:#b9c3d1;background:#fafbfd}
+  .cal-d.sel{border:2px solid var(--brand);background:var(--brand-soft)}
+  .cal-d.hoy .cal-num{background:var(--accent);color:#fff;border-radius:999px;padding:0 7px}
+  .cal-d.fut,.cal-d:disabled{opacity:.45;cursor:default}
+  .cal-d.tinted.p-ok{background:var(--ok-soft);border-color:#bfe3cd}.cal-d.tinted.p-warn{background:var(--warn-soft);border-color:#f3d3ab}
+  .cal-d.tinted.p-bad{background:var(--bad-soft);border-color:#f0c4c0}.cal-d.tinted.p-info{background:var(--info-soft);border-color:#d3cff4}
+  .cal-num{font-weight:800;font-size:14px}
+  .cal-b{display:flex;flex-wrap:wrap;gap:3px;min-width:0}
+  .cal-n{font-size:11.5px;font-weight:700;border-radius:6px;padding:1px 6px;white-space:nowrap}
+  .cal-n.ok{background:var(--ok-soft);color:var(--ok)}.cal-n.warn{background:var(--warn-soft);color:var(--warn)}.cal-n.bad{background:var(--bad-soft);color:var(--bad)}.cal-n.info{background:var(--info-soft);color:var(--info)}
+  .cal-tag{font-size:11px;font-weight:600;border-radius:6px;padding:1px 6px}
+  .cal-mute{font-size:11.5px;color:var(--muted)}
+  .cal-d{overflow:hidden}
+  @media (max-width:640px){.cal{gap:3px}.cal-d{min-height:58px;padding:4px}.cal-n{font-size:10px;padding:0 3px}.cal-h{font-size:10px}.cal-mute,.cal-tag{display:none}.cal-d.tinted .small{font-size:9.5px}}
   @media (max-width:640px){
     #app{padding:12px}
     .card{padding:14px}
@@ -289,7 +307,7 @@
     return j;
   }
   const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} } };
-  function guardarVista() { ls.set('chk_vista', JSON.stringify({ t: Date.now(), tab: S.tab, periodo: S.periodo, sel: S.sel, patronFiltro: S.patronFiltro })); }
+  function guardarVista() { ls.set('chk_vista', JSON.stringify({ t: Date.now(), tab: S.tab, periodo: S.periodo, sel: S.sel, patronFiltro: S.patronFiltro, dia: S.dia })); }
   function cerrarSesionLocal(msg) { ss.set('chk_cache', null); ls.set('chk_vista', null); S.token = null; S.yo = null; S.data = null; ls.set('chk_token', null); ls.set('chk_yo', null); S.loginErr = msg || null; render(); }
   async function cargar(silencioso) {
     if (S.loading || !S.token) return;
@@ -569,6 +587,76 @@
       ${rows.length && !S.histFin ? '<p><button class="btn" data-act="histMas">Ver más</button></p>' : ''}</div>`;
   }
 
+  // ---------- calendario de la quincena ----------
+  function infoDia(m, k, idx) { return dayInfo(m, k, (idx.rec[m.id] || {})[k], (idx.aj[m.id] || {})[k], D().hoy); }
+  function resumenDia(k, ms, idx) {
+    const r = { asist: 0, ret: 0, faltas: 0, just: 0, sinReg: 0, total: 0, inhabil: null, activos: 0 };
+    for (const m of ms) {
+      const i = infoDia(m, k, idx);
+      if (i.fuera) continue;
+      r.activos++;
+      if (i.inhabil && !i.asistencia) { r.inhabil = r.inhabil || i.estado; continue; }
+      if (!i.laborable && !i.asistencia) continue;
+      r.total++;
+      if (i.asistencia) { r.asist++; if (i.retardo && !i.j) r.ret++; }
+      else if (i.falta) r.faltas++;
+      else if (i.justificada) r.just++;
+      else r.sinReg++;
+    }
+    return r;
+  }
+  function calendario(p, celda) {
+    const r = periodRange(p);
+    const lead = (r.start.getDay() + 6) % 7; // lunes primero
+    let html = '<div class="cal">' + ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(d => `<div class="cal-h">${d}</div>`).join('');
+    for (let i = 0; i < lead; i++) html += '<div class="cal-e"></div>';
+    for (const k of r.keys) html += celda(k);
+    return html + '</div>';
+  }
+  function calGeneral(p, ms, idx) {
+    const hoy = D().hoy;
+    return calendario(p, k => {
+      const d = parseKey(k); const fut = k > hoy; const sel = S.dia === k;
+      const rs = fut ? null : resumenDia(k, ms, idx);
+      let body = '';
+      if (fut || !rs.activos) body = '<span class="cal-mute">—</span>';
+      else if (rs.inhabil && !rs.total) body = `<span class="cal-tag p-info">${esc(rs.inhabil.length > 16 ? rs.inhabil.slice(0, 15) + '…' : rs.inhabil)}</span>`;
+      else if (!rs.total) body = '<span class="cal-mute">Descanso</span>';
+      else body = `<span class="cal-n ok" title="Asistencias">${rs.asist}/${rs.total}</span>${rs.ret ? `<span class="cal-n warn" title="Retardos">${rs.ret} R</span>` : ''}${rs.faltas ? `<span class="cal-n bad" title="Faltas">${rs.faltas} F</span>` : ''}${rs.just ? `<span class="cal-n info" title="Justificadas">${rs.just} J</span>` : ''}`;
+      return `<button class="cal-d ${sel ? 'sel' : ''} ${k === hoy ? 'hoy' : ''} ${fut ? 'fut' : ''}" data-act="verDia" data-k="${k}" ${fut ? 'disabled' : ''}><span class="cal-num">${d.getDate()}</span><span class="cal-b">${body}</span></button>`;
+    });
+  }
+  function panelDia(k, ms, idx) {
+    const filas = ms.map(m => ({ m, i: infoDia(m, k, idx) })).filter(x => !x.i.fuera && (x.i.laborable || x.i.asistencia || x.i.inhabil));
+    const rs = resumenDia(k, ms, idx);
+    const d = parseKey(k);
+    return `<div class="card"><div class="row between"><h2 style="margin:0">${DIAS[d.getDay()]} ${d.getDate()} de ${MESES[d.getMonth()]}</h2>
+        <span class="muted small">${rs.total ? `${rs.asist} de ${rs.total} asistieron${rs.ret ? ` · ${rs.ret} con retardo` : ''}${rs.faltas ? ` · ${rs.faltas} faltas` : ''}${rs.sinReg ? ` · ${rs.sinReg} sin registro aún` : ''}` : (rs.inhabil || 'Día sin jornada')}</span></div>
+      <div class="tw" style="margin-top:10px"><table><thead><tr><th>Maestro</th><th>Horario</th><th>Entrada</th><th>Salida</th><th>Estado</th><th class="num">Horas</th><th></th></tr></thead><tbody>
+      ${filas.map(({ m, i }) => `<tr><td><button class="btn link" style="padding:0;font-weight:700;text-align:left" data-act="ver" data-id="${esc(m.id)}">${esc(m.nombre)}</button></td>
+        <td class="small">${esc(i.prog || '—')}–${esc(i.progS || '—')}</td><td><b>${esc(i.e || '—')}</b></td><td><b>${esc(i.s || '—')}</b></td>
+        <td><span class="pill ${i.cls}">${esc(i.estado)}</span>${i.sinSalida ? ' <span class="pill p-warn">Sin salida</span>' : ''}${i.anticipada ? ' <span class="pill p-warn">Salida anticipada</span>' : ''}${i.ajustado ? ` <span class="pill p-mute" title="${esc(i.nota)}">Corregido${i.ajPor ? ' por ' + esc(i.ajPor) : ''}</span>` : ''}</td>
+        <td class="num">${i.trabajado != null ? hm(i.trabajado) : ''}</td>
+        <td><button class="btn sm" data-act="corregirDia" data-id="${esc(m.id)}" data-k="${k}">Corregir</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Ningún maestro tenía jornada este día.</td></tr>'}
+      </tbody></table></div></div>`;
+  }
+  function calMaestro(m, p, idx) {
+    const hoy = D().hoy;
+    return calendario(p, k => {
+      const d = parseKey(k); const i = infoDia(m, k, idx);
+      let cls = 'p-mute', txt = '';
+      if (k > hoy) txt = '';
+      else if (i.fuera) txt = '';
+      else if (i.asistencia) { cls = i.cls; txt = `${i.e}${i.s ? '–' + i.s : ''}`; }
+      else if (i.falta) { cls = 'p-bad'; txt = 'Falta'; }
+      else if (i.justificada) { cls = 'p-info'; txt = 'Justif.'; }
+      else if (i.inhabil) { cls = 'p-info'; txt = 'Inhábil'; }
+      else if (i.laborable) { txt = 'Sin registro'; }
+      else txt = 'Descanso';
+      return `<button class="cal-d ${cls !== 'p-mute' ? 'tinted ' + cls : ''} ${k === hoy ? 'hoy' : ''} ${k > hoy ? 'fut' : ''}" data-act="edit" data-k="${k}" ${k > hoy || i.fuera ? 'disabled' : ''} title="${esc(i.estado)}"><span class="cal-num">${d.getDate()}</span><span class="cal-b"><span class="small">${esc(txt)}</span></span></button>`;
+    });
+  }
+
   function viewReporte() {
     const p = S.periodo;
     const ms = maestrosDePeriodo(p);
@@ -593,15 +681,11 @@
       const primera = maestrosList().map(m => m.alta).sort()[0];
       return cardPendientes() + nav + `<div class="card"><h2>No hay maestros en esta quincena</h2><p class="muted">Cada maestro aparece a partir de su fecha de alta${S.patronFiltro ? ' y según el patrón elegido' : ''}. ${primera ? `La primera alta registrada es del ${esc(fmtDay(primera))} ${primera.slice(0, 4)}.` : ''}</p>${esActual ? '' : `<button class="btn primary" data-act="hoy">Ir a la quincena actual</button>`}</div>`;
     }
-    const today = D().hoy;
-    let hoyCard = '';
-    if (periodRange(p).keys.includes(today)) {
-      const items = maestrosList(false).map(m => ({ m, info: dayInfo(m, today, (idx.rec[m.id] || {})[today], (idx.aj[m.id] || {})[today], today) }))
-        .filter(x => !x.info.fuera && (x.info.laborable || x.info.asistencia));
-      const presentes = items.filter(x => x.info.asistencia).length;
-      hoyCard = `<div class="card"><div class="row between"><h3 style="margin:0">Hoy · ${fmtDay(today)}</h3><span class="muted small">${presentes} de ${items.length} han checado · actualizado ${esc((D().ahora || '').split(' ')[1] || '')}</span></div>
-        <div class="chips" style="margin-top:10px">${items.map(x => `<span class="pill ${x.info.asistencia ? x.info.cls : 'p-mute'}" title="${esc(x.info.estado)}">${esc(x.m.nombre)} ${x.info.e ? '· ' + esc(x.info.e) : ''}${x.info.s ? '–' + esc(x.info.s) : ''}</span>`).join('') || '<span class="muted small">Nadie tiene jornada hoy.</span>'}</div></div>`;
-    }
+    const rk = periodRange(p).keys;
+    if (!S.dia || !rk.includes(S.dia) || S.dia > D().hoy) S.dia = rk.includes(D().hoy) ? D().hoy : rk.filter(k => k <= D().hoy).pop() || null;
+    const calCard = `<div class="card"><div class="row between"><h2 style="margin:0">Calendario de la quincena</h2><span class="muted small"><span class="cal-n ok">asistencias</span> <span class="cal-n warn">R retardos</span> <span class="cal-n bad">F faltas</span> <span class="cal-n info">J justificadas</span></span></div>
+      <p class="muted small" style="margin:4px 0 10px">Toca un día para ver el registro de cada maestro. Se actualiza solo cada minuto.</p>${calGeneral(p, ms, idx)}</div>`;
+    const hoyCard = calCard + (S.dia ? panelDia(S.dia, ms, idx) : '');
     const rows = ms.map(m => ({ m, r: resumen(m, p, idx) }));
     const tot = rows.reduce((a, { r }) => { for (const k in r.t) a[k] = (a[k] || 0) + r.t[k]; return a; }, {});
     const stats = `<div class="stats">
@@ -619,7 +703,7 @@
         <td class="num">${r.t.faltas ? `<span class="pill p-bad">${r.t.faltas}</span>` : 0}</td><td class="num hide-sm">${r.t.justificadas}</td>
         <td class="num hide-sm">${r.t.sinSalida}</td><td class="num">${hm(r.t.minutos) || '0:00'}</td><td class="num hide-sm">${hm(r.t.extra) || '0:00'}</td></tr>`).join('')}</tbody></table></div>
       <p class="muted small" style="margin-bottom:0">Horas tomadas del servidor (hora de Durango). Tolerancia de entrada: ${cfg().tolerancia} min. Las faltas de hoy se cuentan cuando termina el día.</p></div>`;
-    return cardPendientes() + nav + hoyCard + stats + table;
+    return cardPendientes() + nav + stats + hoyCard + table;
   }
 
   function viewDetalle(mid, idx) {
@@ -647,6 +731,8 @@
     return `<div class="card"><div class="row between"><div class="row"><button class="btn sm" data-act="back">← Todos</button>
         <div><div style="font-weight:700;font-size:16px">${esc(m.nombre)}${m.baja ? ' <span class="pill p-mute">Baja</span>' : ''}</div><div class="muted small">${variosPatrones() ? esc(nombrePatron(patronById(m.patron_id))) + ' · ' : ''}${m.num_empleado ? 'No. ' + esc(m.num_empleado) + ' · ' : ''}Horario ${esc(m.entrada || '—')}–${esc(m.salida || '—')} · ${(m.dias || [1,2,3,4,5]).map(x => DIAS[x]).join(', ')}</div></div></div>
         <div class="row"><button class="btn sm" data-act="prev">←</button><span class="small" style="font-weight:600">${esc(periodLabel(p))}</span><button class="btn sm" data-act="next">→</button></div></div></div>
+      <div class="card"><h3>Resumen de la quincena</h3><p style="margin:0 0 12px">${t.laborables ? `Asistió <b>${t.asistencias}</b> de <b>${t.laborables}</b> días laborables (${Math.round(100 * t.asistencias / t.laborables)}%). ` : 'Aún no tiene días laborables en esta quincena. '}${t.retardos ? `<b>${t.retardos}</b> retardo${t.retardos > 1 ? 's' : ''} (${t.minRetardo} min en total). ` : 'Sin retardos. '}${t.faltas ? `<b style="color:var(--bad)">${t.faltas}</b> falta${t.faltas > 1 ? 's' : ''}. ` : 'Sin faltas. '}${t.justificadas ? `${t.justificadas} justificada${t.justificadas > 1 ? 's' : ''}. ` : ''}${t.sinSalida ? `${t.sinSalida} día${t.sinSalida > 1 ? 's' : ''} sin registrar salida. ` : ''}Horas trabajadas: <b>${hm(t.minutos) || '0:00'}</b>.</p>
+        ${calMaestro(m, p, idx)}<p class="muted small" style="margin-bottom:0">Toca un día del calendario para corregirlo.</p></div>
       <div class="stats"><div class="stat"><span>Asistencias</span><b>${t.asistencias}/${t.laborables}</b></div><div class="stat"><span>Retardos</span><b style="color:var(--warn)">${t.retardos}</b></div><div class="stat"><span>Min. de retardo</span><b>${t.minRetardo}</b></div><div class="stat"><span>Faltas</span><b style="color:var(--bad)">${t.faltas}</b></div><div class="stat"><span>Horas</span><b>${hm(t.minutos) || '0:00'}</b></div><div class="stat"><span>Extra</span><b>${hm(t.extra) || '0:00'}</b></div></div>
       <div class="card"><div class="tw"><table><thead><tr><th>Día</th><th>Horario</th><th>Entrada</th><th>Salida</th><th>Estado</th><th class="num">Horas</th><th class="num">Extra</th><th></th></tr></thead>
       <tbody>${rowsHtml || '<tr><td colspan="8" class="muted">No hay días laborables en esta quincena.</td></tr>'}</tbody></table></div></div>`;
@@ -851,8 +937,10 @@
         S.periodo = act === 'hoy' ? periodOf(new Date()) : periodShift(S.periodo, act === 'prev' ? -1 : 1);
         S.editDay = null; S.csvText = null; render(); await cargar(true); break;
       case 'ver': S.sel = id; S.editDay = null; render(); window.scrollTo(0, 0); break;
+      case 'verDia': S.dia = k; render(); break;
+      case 'corregirDia': S.sel = id; S.editDay = k; render(); { const f = document.getElementById('fAjuste'); if (f) f.scrollIntoView({ block: 'center' }); } break;
       case 'back': S.sel = null; S.editDay = null; render(); break;
-      case 'edit': S.editDay = S.editDay === k ? null : k; render(); break;
+      case 'edit': S.editDay = S.editDay === k ? null : k; render(); if (S.editDay && b.classList.contains('cal-d')) { const f = document.getElementById('fAjuste'); if (f) f.scrollIntoView({ block: 'center' }); } break;
       case 'cancelEdit': S.editDay = null; render(); break;
       case 'rmAjuste': if (await op('ajuste_quitar', { maestro_id: S.sel, fecha: k }, 'Corrección eliminada')) { S.editDay = null; render(); } break;
       case 'xlsx': await descargarExcel(); break;
@@ -964,7 +1052,7 @@
         if (v && Date.now() - v.t < 8 * 3600 * 1000) {
           if (typeof v.tab === 'string') S.tab = v.tab;
           if (v.periodo && Number.isInteger(v.periodo.y) && Number.isInteger(v.periodo.m) && (v.periodo.h === 0 || v.periodo.h === 1)) S.periodo = v.periodo;
-          S.sel = v.sel || null; S.patronFiltro = +v.patronFiltro || 0;
+          S.sel = v.sel || null; S.patronFiltro = +v.patronFiltro || 0; S.dia = v.dia || null;
         }
         const c = JSON.parse(ss.get('chk_cache') || 'null');
         if (c && c.ini === periodRange(S.periodo).ini && c.data) { S.data = c.data; S.dataFor = c.ini; }
