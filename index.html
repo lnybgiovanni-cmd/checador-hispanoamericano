@@ -288,14 +288,16 @@
     if (!j.ok) throw { message: j.error || 'Ocurrió un error.' };
     return j;
   }
-  function cerrarSesionLocal(msg) { S.token = null; S.yo = null; S.data = null; ls.set('chk_token', null); ls.set('chk_yo', null); S.loginErr = msg || null; render(); }
+  const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} } };
+  function guardarVista() { ls.set('chk_vista', JSON.stringify({ t: Date.now(), tab: S.tab, periodo: S.periodo, sel: S.sel, patronFiltro: S.patronFiltro })); }
+  function cerrarSesionLocal(msg) { ss.set('chk_cache', null); ls.set('chk_vista', null); S.token = null; S.yo = null; S.data = null; ls.set('chk_token', null); ls.set('chk_yo', null); S.loginErr = msg || null; render(); }
   async function cargar(silencioso) {
     if (S.loading || !S.token) return;
     S.loading = true; if (!silencioso) scheduleRender();
     const r = periodRange(S.periodo);
-    try { const j = await api('datos', { ini: r.ini, fin: r.fin }); S.data = j.datos; S.err = null; }
+    try { const j = await api('datos', { ini: r.ini, fin: r.fin }); if (periodRange(S.periodo).ini === r.ini) { S.data = j.datos; S.dataFor = r.ini; ss.set('chk_cache', JSON.stringify({ ini: r.ini, data: j.datos })); } S.err = null; }
     catch (e) { if (!e.silent) S.err = e.message; }
-    finally { S.loading = false; scheduleRender(); }
+    finally { S.loading = false; scheduleRender(); if (S.token && S.dataFor !== periodRange(S.periodo).ini && !S.err) cargar(true); }
   }
   async function op(accion, datos, okMsg) {
     if (S.busy) return false;
@@ -397,6 +399,7 @@
   // ---------- render ----------
   function render() {
     S.pendingRender = false;
+    if (S.token) guardarVista();
     let html = hero();
     if (!S.token) html += viewLogin();
     else if (!S.data) {
@@ -570,8 +573,11 @@
     const p = S.periodo;
     const ms = maestrosDePeriodo(p);
     if (!maestrosList().length) return cardPendientes() + `<div class="card"><h2>Aún no hay maestros</h2><p class="muted">Da de alta a los maestros en <b>Maestros y celulares</b> e imprime el QR de la entrada en <b>Código QR y patrones</b>.</p><button class="btn primary" data-act="tab" data-id="maestros">Agregar maestros</button></div>`;
+    const cargandoOtra = S.dataFor && S.dataFor !== periodRange(p).ini;
     const idx = indices();
-    if (S.sel && maestroById(S.sel)) return viewDetalle(S.sel, idx);
+    if (S.sel && maestroById(S.sel) && !cargandoOtra) return viewDetalle(S.sel, idx);
+    const actual = periodOf(parseKey(D().hoy));
+    const esActual = actual.y === p.y && actual.m === p.m && actual.h === p.h;
     const nav = `<div class="card"><div class="row between">
         <div class="row"><button class="btn sm" data-act="prev" aria-label="Quincena anterior">←</button>
         <div><div style="font-weight:700;font-size:16px">Quincena del ${esc(periodLabel(p))}</div><div class="muted small">Corte: ${esc(periodCorte(p))}${S.loading ? ' · actualizando…' : ''}</div></div>
@@ -579,8 +585,14 @@
         <button class="btn sm link" data-act="hoy">Quincena actual</button></div>
         <div class="row">${variosPatrones() ? `<select id="selPatron" title="Patrón"><option value="0">Todos los patrones</option>${patronesActivos().map(pt => `<option value="${pt.id}" ${S.patronFiltro === pt.id ? 'selected' : ''}>${esc(nombrePatron(pt))}</option>`).join('')}</select>` : ''}
         <button class="btn red" data-act="xlsx">Descargar Excel</button></div></div>
+        ${esActual ? '' : `<div class="note" style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">Estás viendo una quincena ${keyOf(periodRange(p).start) < D().hoy ? 'anterior' : 'futura'}. <button class="btn sm primary" data-act="hoy">Ir a la quincena actual (${esc(periodLabel(actual))})</button></div>`}
         ${S.csvText != null ? `<div style="margin-top:12px"><div class="muted small" style="margin-bottom:6px">No se pudo descargar aquí. Copia este texto y pégalo en Excel:</div><textarea class="csv" readonly>${esc(S.csvText)}</textarea><div class="row" style="margin-top:6px"><button class="btn sm" data-act="copycsv">Copiar</button><button class="btn sm link" data-act="closecsv">Cerrar</button></div></div>` : ''}
       </div>`;
+    if (cargandoOtra) return cardPendientes() + nav + `<div class="card loading">Cargando la quincena del ${esc(periodLabel(p))}…</div>`;
+    if (!ms.length) {
+      const primera = maestrosList().map(m => m.alta).sort()[0];
+      return cardPendientes() + nav + `<div class="card"><h2>No hay maestros en esta quincena</h2><p class="muted">Cada maestro aparece a partir de su fecha de alta${S.patronFiltro ? ' y según el patrón elegido' : ''}. ${primera ? `La primera alta registrada es del ${esc(fmtDay(primera))} ${primera.slice(0, 4)}.` : ''}</p>${esActual ? '' : `<button class="btn primary" data-act="hoy">Ir a la quincena actual</button>`}</div>`;
+    }
     const today = D().hoy;
     let hoyCard = '';
     if (periodRange(p).keys.includes(today)) {
@@ -729,7 +741,7 @@
   const loadLogo = () => new Promise(res => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = LOGO; });
   async function saveFile(data, filename) {
     const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
-    const a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.rel = 'noopener'; a.style.display = 'none'; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 0);
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     return true;
   }
@@ -884,7 +896,7 @@
         if (f.id === 'fPrimera') await api('primera_cuenta', { codigo: g('codigo'), nombre: g('nombre'), email: g('email'), password: String(fd.get('password') || '') });
         const j = await api('login', { email: g('email'), password: String(fd.get('password') || '') });
         S.token = j.token; S.yo = { nombre: j.nombre, email: j.email, rol: j.rol }; ls.set('chk_token', j.token); ls.set('chk_yo', JSON.stringify(S.yo));
-        S.primera = false; S.busy = false; S.tab = 'reporte'; render(); await cargar();
+        S.primera = false; S.busy = false; S.tab = 'reporte'; S.periodo = periodOf(new Date()); S.sel = null; render(); await cargar();
       } catch (e) { S.busy = false; S.loginErr = e.message; render(); }
       return;
     }
@@ -946,6 +958,18 @@
   async function start() {
     S.token = ls.get('chk_token');
     try { S.yo = JSON.parse(ls.get('chk_yo') || 'null'); } catch (e) { S.yo = null; }
+    if (S.token) {
+      try {
+        const v = JSON.parse(ls.get('chk_vista') || 'null');
+        if (v && Date.now() - v.t < 8 * 3600 * 1000) {
+          if (typeof v.tab === 'string') S.tab = v.tab;
+          if (v.periodo && Number.isInteger(v.periodo.y) && Number.isInteger(v.periodo.m) && (v.periodo.h === 0 || v.periodo.h === 1)) S.periodo = v.periodo;
+          S.sel = v.sel || null; S.patronFiltro = +v.patronFiltro || 0;
+        }
+        const c = JSON.parse(ss.get('chk_cache') || 'null');
+        if (c && c.ini === periodRange(S.periodo).ini && c.data) { S.data = c.data; S.dataFor = c.ini; }
+      } catch (e) {}
+    }
     render();
     if (S.token) { await cargar(); try { const j = await api('cuenta', { op: 'yo', datos: {} }); S.yo = j.r; ls.set('chk_yo', JSON.stringify(S.yo)); render(); } catch (e) {} }
     setInterval(() => { if (S.token && !document.hidden && !S.busy && !S.editDay && S.tab === 'reporte') cargar(true); }, 60000);
